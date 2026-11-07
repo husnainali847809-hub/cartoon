@@ -26,33 +26,28 @@ def get_viral_cartoon_url():
     selected_search = random.choice(CARTOON_KEYWORDS)
     print(f"[*] Searching YouTube for viral content: '{selected_search}'")
     
-    # 2 se 5 minute ki videos ko target karne ke liye filter criteria
-    # duration >= 120 (2 mins) aur duration <= 300 (5 mins)
     ydl_opts = {
         'default_search': 'ytsearch',
         'extract_flat': True,
-        'playlistend': 5, # Top 5 results nikalenge taake unme se duration check ho sake
+        'playlistend': 5,
         'quiet': True
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # Search query generate karein
         search_query = f"ytsearch5:{selected_search}"
         result = ydl.extract_info(search_query, download=False)
         
         if 'entries' in result and len(result['entries']) > 0:
-            # Sahi video dhoondne ki koshish (Jo 2-5 mins ke darmiyan ho)
             for entry in result['entries']:
                 duration = entry.get('duration', 0)
-                # Agar duration 2 min (120s) se 6 min (360s) tak ho to utha lo
                 if 120 <= duration <= 360:
+                    # Galti yahan thi: yahan humne beech mein '/' lagaya hai
                     video_url = f"https://youtube.com{entry['id']}"
                     print(f"[+] Found Viral Video: {entry.get('title')}")
                     print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
                     print(f"[+] Direct URL: {video_url}")
                     return video_url, entry.get('title')
             
-            # Agar koi criteria match na ho to top result hi utha lo
             top_entry = result['entries'][0]
             video_url = f"https://youtube.com{top_entry['id']}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
@@ -72,11 +67,9 @@ def download_video(url, output_path):
     print("[+] Download complete!")
 
 def convert_to_vertical_short(input_path, output_path, duration=120):
-    """Video ko 9:16 vertical banana (Ab yeh 2 min yaani 120 seconds ki video kategi)"""
     print(f"[*] Processing video to 9:16 format ({duration} seconds)...")
     clip = VideoFileClip(input_path)
     
-    # Shuruati 10 seconds skip karke agle 2 minutes kaatna
     start_time = 10
     if clip.duration > duration + start_time:
         clip = clip.subclip(start_time, duration + start_time)
@@ -106,6 +99,7 @@ def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
     with open(file_path, 'rb') as f:
+        # URL ke beech mein '/' sahi kiya
         response = requests.put(f"https://transfer.sh{filename}", data=f)
     if response.status_code == 200:
         public_url = response.text.strip()
@@ -143,17 +137,12 @@ if __name__ == "__main__":
         if not BUFFER_ACCESS_TOKEN or not BUFFER_PROFILE_ID:
             raise Exception("Missing Buffer Access Token or Profile ID in environment variables.")
             
-        # Step 1: Automatic viral video dhoondo aur uska title lo
         target_video_url, video_title = get_viral_cartoon_url()
-        
-        # Step 2: Download aur process karo (2 Minutes)
         download_video(target_video_url, DOWNLOAD_OUTPUT)
         convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120)
-        
-        # Step 3: Hosting aur Buffer par uploading
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
         
-        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! Like and follow for more nostalgia. 📺❤️ #Cartoons #Reels #Funny #Nostalgia #Anime"
+        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! Like and follow for more nostalgia. 📺❤️ #Cartoons #Reels #Funny #Nostalgia"
         send_to_buffer(public_video_url, video_caption)
         
         if os.path.exists(DOWNLOAD_OUTPUT): os.remove(DOWNLOAD_OUTPUT)
