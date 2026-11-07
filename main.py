@@ -38,14 +38,14 @@ def convert_to_vertical_short(input_path, output_path, duration=45):
     if target_w > original_w:
         target_w = original_w
         target_h = int(original_w * (16 / 9))
-        clip = clip.resize(height=target_h)
+        clip = clip.resized(height=target_h)
         original_w, original_h = clip.size
     
     x_center = original_w / 2
     y_center = original_h / 2
     
-    cropped_clip = clip.crop(x_center=x_center, y_center=y_center, width=target_w, height=original_h)
-    cropped_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=30, logger=None)
+    cropped_clip = clip.cropped(x_center=x_center, y_center=y_center, width=target_w, height=original_h)
+    cropped_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=30)
     
     clip.close()
     cropped_clip.close()
@@ -70,7 +70,7 @@ def send_to_buffer(video_url, caption):
     url = "https://bufferapp.com"
     
     payload = {
-        'profile_ids[]': [BUFFER_PROFILE_ID],
+        'profile_ids': [BUFFER_PROFILE_ID],
         'text': caption,
         'shorten': 'false',
         'now': 'false',  # True karne se foran post ho jayega, False se Queue mein jayega
