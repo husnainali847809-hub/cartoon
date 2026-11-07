@@ -22,7 +22,7 @@ SHORTS_OUTPUT = "final_cartoon_video.mp4"
 # =======================================================
 
 def get_viral_cartoon_url():
-    """Keywords mein se random select karke 2 se 5 min ki viral video dhoondna"""
+    """Keywords mein se random select karke 2 se 6 min ki viral video dhoondna"""
     selected_search = random.choice(CARTOON_KEYWORDS)
     print(f"[*] Searching YouTube for viral content: '{selected_search}'")
     
@@ -41,8 +41,9 @@ def get_viral_cartoon_url():
             for entry in result['entries']:
                 duration = entry.get('duration', 0)
                 if 120 <= duration <= 360:
-                    # Galti se bachne ke liye safe full watch link format
-                    video_url = f"https://youtube.com{entry['id']}"
+                    video_id = entry['id']
+                    # Bilkul standard aur fail-proof watch link format
+                    video_url = f"https://youtube.com{video_id}"
                     print(f"[+] Found Viral Video: {entry.get('title')}")
                     print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
                     print(f"[+] Direct URL: {video_url}")
@@ -58,7 +59,6 @@ def get_viral_cartoon_url():
 def download_video(url, output_path):
     print(f"[*] Downloading video from: {url}")
     ydl_opts = {
-        # Fast download aur safe encoding ke liye settings
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
         'quiet': True,
@@ -99,8 +99,8 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
-    # transfer.sh ke bajaye bashupload use kar rahe hain jo zada stable hai GitHub actions par
     filename = os.path.basename(file_path)
+    # Bashupload ka standard syntax jisme link chipakne ka koi khatra nahi
     url = f"https://bashupload.com{filename}"
     
     with open(file_path, 'rb') as f:
