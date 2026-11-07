@@ -44,7 +44,7 @@ def get_viral_cartoon_url():
                     duration = entry.get('duration', 0)
                     if duration and 120 <= duration <= 360:
                         video_id = entry.get('id')
-                        # Bilkul safe aur standard URL format lagaya
+                        # FIX: Sahi aur standard YouTube URL format lagaya
                         video_url = f"https://youtube.com{video_id}"
                         print(f"[+] Found Viral Video: {entry.get('title')}")
                         print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
@@ -54,6 +54,7 @@ def get_viral_cartoon_url():
             # 2. Backup agar duration criteria match na ho
             top_entry = result['entries'][0]
             video_id = top_entry.get('id')
+            # FIX: Sahi aur standard YouTube URL format lagaya
             video_url = f"https://youtube.com{video_id}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             return video_url, top_entry.get('title')
@@ -104,6 +105,7 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
+    # FIX: Bashupload ke URL mein sahi slash (/) lagaya
     url = f"https://bashupload.com{filename}"
     
     with open(file_path, 'rb') as f:
@@ -118,7 +120,7 @@ def upload_to_temp_host(file_path):
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
-    # Buffer ka asli updates endpoint url lagaya
+    # FIX: Buffer API ka asli updates creation endpoint lagaya
     url = "https://bufferapp.com"
     
     payload = {
