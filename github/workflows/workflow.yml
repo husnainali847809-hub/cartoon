@@ -2,9 +2,9 @@ name: Automated Cartoon Shorts Bot
 
 on:
   schedule:
-    # Yeh cron job har roz 07:00 UTC (12:00 PM PKT) par automatic chalegi
+    # Yeh cron job har roz Pakistan ke time ke mutabiq dopehar 12:00 baje (07:00 UTC) automatic chalegi
     - cron: '0 7 * * *'
-  workflow_dispatch: # Isse aap GitHub website se jab chahein manual bhi click karke chala sakte hain
+  workflow_dispatch: # Isse aap GitHub par manual button daba kar bhi jab chahein chala sakte hain
 
 jobs:
   build-and-run:
@@ -17,7 +17,7 @@ jobs:
     - name: Set up Python environment
       uses: actions/setup-python@v5
       with:
-        python-python: '3.10'
+        python-version: '3.10'
         cache: 'pip'
 
     - name: Install System Dependencies for Video Editing
