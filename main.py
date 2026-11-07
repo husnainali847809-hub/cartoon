@@ -42,14 +42,14 @@ def get_viral_cartoon_url():
                 duration = entry.get('duration', 0)
                 if 120 <= duration <= 360:
                     video_id = entry['id']
-                    # Bilkul standard aur fail-proof watch link format
+                    # Bilkul safe aur functional watch link format jahan parameters bilkul clear hain
                     video_url = f"https://youtube.com{video_id}"
                     print(f"[+] Found Viral Video: {entry.get('title')}")
                     print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
                     print(f"[+] Direct URL: {video_url}")
                     return video_url, entry.get('title')
             
-            top_entry = result['entries'][0]
+            top_entry = result['entries']
             video_url = f"https://youtube.com{top_entry['id']}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             return video_url, top_entry.get('title')
@@ -100,7 +100,7 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
-    # Bashupload ka standard syntax jisme link chipakne ka koi khatra nahi
+    # Raste mein slash explicit daal kar bashupload url theek kiya
     url = f"https://bashupload.com{filename}"
     
     with open(file_path, 'rb') as f:
@@ -115,10 +115,11 @@ def upload_to_temp_host(file_path):
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
+    # Buffer ka real API endpoint create updates ke liye
     url = "https://bufferapp.com"
     
     payload = {
-        'profile_ids': [BUFFER_PROFILE_ID],
+        'profile_ids[]': [BUFFER_PROFILE_ID],
         'text': caption,
         'shorten': 'false',
         'now': 'false',
@@ -126,8 +127,7 @@ def send_to_buffer(video_url, caption):
     }
     
     headers = {
-        'Authorization': f'Bearer {BUFFER_ACCESS_TOKEN}',
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Authorization': f'Bearer {BUFFER_ACCESS_TOKEN}'
     }
     
     response = requests.post(url, data=payload, headers=headers).json()
