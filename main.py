@@ -1,7 +1,7 @@
 import os
 import requests
 import yt_dlp
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
