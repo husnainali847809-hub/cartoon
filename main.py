@@ -1,4 +1,5 @@
 import os
+import random
 import requests
 import yt_dlp
 from moviepy import VideoFileClip
@@ -7,31 +8,57 @@ from moviepy import VideoFileClip
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
 BUFFER_PROFILE_ID = os.getenv("BUFFER_PROFILE_ID")
 
-# Cartoon Network India ka official channel link (Aap isse kisi bhi doosre channel se badal sakte hain)
-CARTOON_CHANNEL_URL = "https://youtube.com"
+# Viral aur famous cartoons ke automatic search keywords
+CARTOON_KEYWORDS = [
+    "tom and jerry classic full episodes cartoon",
+    "mr bean cartoon full episodes funny",
+    "oggy and the cockroaches latest episode",
+    "looney tunes funny cartoon moments",
+    "motu patlu new episodes hindi cartoon"
+]
 
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
-SHORTS_OUTPUT = "final_short.mp4"
+SHORTS_OUTPUT = "final_cartoon_video.mp4"
 # =======================================================
 
-def get_latest_video_url(channel_url):
-    """Channel se automatic sabse latest video ka URL nikalne ka function"""
-    print(f"[*] Fetching the latest cartoon video from: {channel_url}")
+def get_viral_cartoon_url():
+    """Keywords mein se random select karke 2 se 5 min ki viral video dhoondna"""
+    selected_search = random.choice(CARTOON_KEYWORDS)
+    print(f"[*] Searching YouTube for viral content: '{selected_search}'")
+    
+    # 2 se 5 minute ki videos ko target karne ke liye filter criteria
+    # duration >= 120 (2 mins) aur duration <= 300 (5 mins)
     ydl_opts = {
+        'default_search': 'ytsearch',
         'extract_flat': True,
-        'playlistend': 1, # Sirf sabse pehli (latest) video ka data chahiye
+        'playlistend': 5, # Top 5 results nikalenge taake unme se duration check ho sake
         'quiet': True
     }
+    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        result = ydl.extract_info(channel_url, download=False)
+        # Search query generate karein
+        search_query = f"ytsearch5:{selected_search}"
+        result = ydl.extract_info(search_query, download=False)
+        
         if 'entries' in result and len(result['entries']) > 0:
-            latest_video = result['entries'][0]
-            video_url = f"https://youtube.com{latest_video['id']}"
-            print(f"[+] Found latest video title: {latest_video.get('title')}")
-            print(f"[+] Direct URL: {video_url}")
-            return video_url
+            # Sahi video dhoondne ki koshish (Jo 2-5 mins ke darmiyan ho)
+            for entry in result['entries']:
+                duration = entry.get('duration', 0)
+                # Agar duration 2 min (120s) se 6 min (360s) tak ho to utha lo
+                if 120 <= duration <= 360:
+                    video_url = f"https://youtube.com{entry['id']}"
+                    print(f"[+] Found Viral Video: {entry.get('title')}")
+                    print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
+                    print(f"[+] Direct URL: {video_url}")
+                    return video_url, entry.get('title')
+            
+            # Agar koi criteria match na ho to top result hi utha lo
+            top_entry = result['entries'][0]
+            video_url = f"https://youtube.com{top_entry['id']}"
+            print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
+            return video_url, top_entry.get('title')
         else:
-            raise Exception("Channel se koi video nahi mil saki.")
+            raise Exception("YouTube search se koi video nahi mil saki.")
 
 def download_video(url, output_path):
     print(f"[*] Downloading video from: {url}")
@@ -44,13 +71,15 @@ def download_video(url, output_path):
         ydl.download([url])
     print("[+] Download complete!")
 
-def convert_to_vertical_short(input_path, output_path, duration=45):
-    print("[*] Processing video to vertical Shorts format...")
+def convert_to_vertical_short(input_path, output_path, duration=120):
+    """Video ko 9:16 vertical banana (Ab yeh 2 min yaani 120 seconds ki video kategi)"""
+    print(f"[*] Processing video to 9:16 format ({duration} seconds)...")
     clip = VideoFileClip(input_path)
     
-    # Shuruati 5 seconds chor kar agle 45 seconds kaatna
-    if clip.duration > duration + 5:
-        clip = clip.subclip(5, duration + 5)
+    # Shuruati 10 seconds skip karke agle 2 minutes kaatna
+    start_time = 10
+    if clip.duration > duration + start_time:
+        clip = clip.subclip(start_time, duration + start_time)
     else:
         clip = clip.subclip(0, min(clip.duration, duration))
         
@@ -71,7 +100,7 @@ def convert_to_vertical_short(input_path, output_path, duration=45):
     
     clip.close()
     cropped_clip.close()
-    print("[+] Shorts processing complete!")
+    print("[+] Video processing complete!")
 
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
@@ -114,15 +143,17 @@ if __name__ == "__main__":
         if not BUFFER_ACCESS_TOKEN or not BUFFER_PROFILE_ID:
             raise Exception("Missing Buffer Access Token or Profile ID in environment variables.")
             
-        # Step 1: Khud hi latest video ka pata lagao
-        target_video_url = get_latest_video_url(CARTOON_CHANNEL_URL)
+        # Step 1: Automatic viral video dhoondo aur uska title lo
+        target_video_url, video_title = get_viral_cartoon_url()
         
-        # Step 2: Baki processing automatic hogi
+        # Step 2: Download aur process karo (2 Minutes)
         download_video(target_video_url, DOWNLOAD_OUTPUT)
-        convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=45)
+        convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120)
+        
+        # Step 3: Hosting aur Buffer par uploading
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
         
-        video_caption = "Latest Cartoon Fun! 🔥 Don't forget to follow for more daily shorts. #Cartoons #Reels #Shorts #Trending"
+        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! Like and follow for more nostalgia. 📺❤️ #Cartoons #Reels #Funny #Nostalgia #Anime"
         send_to_buffer(public_video_url, video_caption)
         
         if os.path.exists(DOWNLOAD_OUTPUT): os.remove(DOWNLOAD_OUTPUT)
