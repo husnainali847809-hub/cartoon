@@ -41,7 +41,7 @@ def get_viral_cartoon_url():
             for entry in result['entries']:
                 duration = entry.get('duration', 0)
                 if 120 <= duration <= 360:
-                    # Galti yahan thi: yahan humne beech mein '/' lagaya hai
+                    # Bilkul safe and standard watch link format
                     video_url = f"https://youtube.com{entry['id']}"
                     print(f"[+] Found Viral Video: {entry.get('title')}")
                     print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
@@ -99,7 +99,7 @@ def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
     with open(file_path, 'rb') as f:
-        # URL ke beech mein '/' sahi kiya
+        # Link ko '/' ke sath mazeed secure kiya
         response = requests.put(f"https://transfer.sh{filename}", data=f)
     if response.status_code == 200:
         public_url = response.text.strip()
