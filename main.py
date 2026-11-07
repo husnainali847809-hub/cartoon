@@ -6,11 +6,32 @@ from moviepy import VideoFileClip
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
 BUFFER_PROFILE_ID = os.getenv("BUFFER_PROFILE_ID")
-VIDEO_URL = "https://youtube.com"  # Sample URL (Aap isse change kar sakte hain)
+
+# Cartoon Network India ka official channel link (Aap isse kisi bhi doosre channel se badal sakte hain)
+CARTOON_CHANNEL_URL = "https://youtube.com"
 
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_short.mp4"
 # =======================================================
+
+def get_latest_video_url(channel_url):
+    """Channel se automatic sabse latest video ka URL nikalne ka function"""
+    print(f"[*] Fetching the latest cartoon video from: {channel_url}")
+    ydl_opts = {
+        'extract_flat': True,
+        'playlistend': 1, # Sirf sabse pehli (latest) video ka data chahiye
+        'quiet': True
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        result = ydl.extract_info(channel_url, download=False)
+        if 'entries' in result and len(result['entries']) > 0:
+            latest_video = result['entries'][0]
+            video_url = f"https://youtube.com{latest_video['id']}"
+            print(f"[+] Found latest video title: {latest_video.get('title')}")
+            print(f"[+] Direct URL: {video_url}")
+            return video_url
+        else:
+            raise Exception("Channel se koi video nahi mil saki.")
 
 def download_video(url, output_path):
     print(f"[*] Downloading video from: {url}")
@@ -27,6 +48,7 @@ def convert_to_vertical_short(input_path, output_path, duration=45):
     print("[*] Processing video to vertical Shorts format...")
     clip = VideoFileClip(input_path)
     
+    # Shuruati 5 seconds chor kar agle 45 seconds kaatna
     if clip.duration > duration + 5:
         clip = clip.subclip(5, duration + 5)
     else:
@@ -52,7 +74,6 @@ def convert_to_vertical_short(input_path, output_path, duration=45):
     print("[+] Shorts processing complete!")
 
 def upload_to_temp_host(file_path):
-    """Buffer ko bhejane ke liye temporary public URL generate karna"""
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
     with open(file_path, 'rb') as f:
@@ -65,7 +86,6 @@ def upload_to_temp_host(file_path):
         raise Exception("Temporary cloud upload failed.")
 
 def send_to_buffer(video_url, caption):
-    """Buffer API ke zariye post ko Facebook page ki queue mein bhej dena"""
     print("[*] Sending post to Buffer Queue...")
     url = "https://bufferapp.com"
     
@@ -73,7 +93,7 @@ def send_to_buffer(video_url, caption):
         'profile_ids': [BUFFER_PROFILE_ID],
         'text': caption,
         'shorten': 'false',
-        'now': 'false',  # True karne se foran post ho jayega, False se Queue mein jayega
+        'now': 'false',
         'media[video]': video_url
     }
     
@@ -94,11 +114,15 @@ if __name__ == "__main__":
         if not BUFFER_ACCESS_TOKEN or not BUFFER_PROFILE_ID:
             raise Exception("Missing Buffer Access Token or Profile ID in environment variables.")
             
-        download_video(VIDEO_URL, DOWNLOAD_OUTPUT)
+        # Step 1: Khud hi latest video ka pata lagao
+        target_video_url = get_latest_video_url(CARTOON_CHANNEL_URL)
+        
+        # Step 2: Baki processing automatic hogi
+        download_video(target_video_url, DOWNLOAD_OUTPUT)
         convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=45)
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
         
-        video_caption = "Nostalgic Cartoon Moments! ✨ Don't forget to follow for more. #Cartoons #Reels #Shorts"
+        video_caption = "Latest Cartoon Fun! 🔥 Don't forget to follow for more daily shorts. #Cartoons #Reels #Shorts #Trending"
         send_to_buffer(public_video_url, video_caption)
         
         if os.path.exists(DOWNLOAD_OUTPUT): os.remove(DOWNLOAD_OUTPUT)
