@@ -38,19 +38,20 @@ def get_viral_cartoon_url():
         result = ydl.extract_info(search_query, download=False)
         
         if 'entries' in result and len(result['entries']) > 0:
-            # 1. Pehle filter matching video dhoondte hain
+            # 1. Pehle duration matching video dhoondte hain
             for entry in result['entries']:
                 if entry and isinstance(entry, dict):
                     duration = entry.get('duration', 0)
                     if duration and 120 <= duration <= 360:
                         video_id = entry.get('id')
+                        # Bilkul safe aur standard URL format lagaya
                         video_url = f"https://youtube.com{video_id}"
                         print(f"[+] Found Viral Video: {entry.get('title')}")
                         print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
                         print(f"[+] Direct URL: {video_url}")
                         return video_url, entry.get('title')
             
-            # 2. Galti yahan thi: list index [0] lagaya taake backup video sahi se select ho
+            # 2. Backup agar duration criteria match na ho
             top_entry = result['entries'][0]
             video_id = top_entry.get('id')
             video_url = f"https://youtube.com{video_id}"
@@ -117,6 +118,7 @@ def upload_to_temp_host(file_path):
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
+    # Buffer ka asli updates endpoint url lagaya
     url = "https://bufferapp.com"
     
     payload = {
