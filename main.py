@@ -38,19 +38,22 @@ def get_viral_cartoon_url():
         result = ydl.extract_info(search_query, download=False)
         
         if 'entries' in result and len(result['entries']) > 0:
+            # 1. Pehle filter matching video dhoondte hain
             for entry in result['entries']:
-                duration = entry.get('duration', 0)
-                if 120 <= duration <= 360:
-                    video_id = entry['id']
-                    # Bilkul safe aur functional watch link format jahan parameters bilkul clear hain
-                    video_url = f"https://youtube.com{video_id}"
-                    print(f"[+] Found Viral Video: {entry.get('title')}")
-                    print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
-                    print(f"[+] Direct URL: {video_url}")
-                    return video_url, entry.get('title')
+                if entry and isinstance(entry, dict):
+                    duration = entry.get('duration', 0)
+                    if duration and 120 <= duration <= 360:
+                        video_id = entry.get('id')
+                        video_url = f"https://youtube.com{video_id}"
+                        print(f"[+] Found Viral Video: {entry.get('title')}")
+                        print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
+                        print(f"[+] Direct URL: {video_url}")
+                        return video_url, entry.get('title')
             
-            top_entry = result['entries']
-            video_url = f"https://youtube.com{top_entry['id']}"
+            # 2. Galti yahan thi: list index [0] lagaya taake backup video sahi se select ho
+            top_entry = result['entries'][0]
+            video_id = top_entry.get('id')
+            video_url = f"https://youtube.com{video_id}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             return video_url, top_entry.get('title')
         else:
@@ -100,7 +103,6 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
-    # Raste mein slash explicit daal kar bashupload url theek kiya
     url = f"https://bashupload.com{filename}"
     
     with open(file_path, 'rb') as f:
@@ -115,7 +117,6 @@ def upload_to_temp_host(file_path):
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
-    # Buffer ka real API endpoint create updates ke liye
     url = "https://bufferapp.com"
     
     payload = {
