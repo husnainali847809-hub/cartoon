@@ -1,0 +1,37 @@
+name: Automated Cartoon Shorts Bot
+
+on:
+  schedule:
+    # Yeh cron job har roz Pakistan ke time ke mutabiq dopehar 12:00 baje (07:00 UTC) automatic chalegi
+    - cron: '0 7 * * *'
+  workflow_dispatch: # Isse aap GitHub par manual button daba kar bhi jab chahein chala sakte hain
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Set up Python environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install System Dependencies for Video Editing
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
+    - name: Install Python Libraries
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Script to Generate and Send Short to Buffer
+      env:
+        BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+        BUFFER_PROFILE_ID: ${{ secrets.BUFFER_PROFILE_ID }}
+      run: python main.py
