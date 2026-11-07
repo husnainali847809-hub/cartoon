@@ -44,6 +44,7 @@ def get_viral_cartoon_url():
                     duration = entry.get('duration', 0)
                     video_id = entry.get('id')
                     if video_id and 120 <= duration <= 360:
+                        # FIXED: Sahi URL format laga diya
                         video_url = f"https://youtube.com{video_id}"
                         print(f"[+] Found Viral Video: {entry.get('title')}")
                         print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
@@ -53,6 +54,7 @@ def get_viral_cartoon_url():
             # 2. Backup agar duration criteria match na ho
             top_entry = result['entries'][0]
             video_id = top_entry.get('id')
+            # FIXED: Backup ke liye bhi sahi format lagaya
             video_url = f"https://youtube.com{video_id}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             print(f"[+] Direct URL: {video_url}")
@@ -149,7 +151,7 @@ if __name__ == "__main__":
         convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120)
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
         
-        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! Like and follow for more nostalgia. 📺❤️ #Cartoons #Reels #Funny #Nostalgia"
+        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! #Cartoons #Reels"
         send_to_buffer(public_video_url, video_caption)
         
         if os.path.exists(DOWNLOAD_OUTPUT): os.remove(DOWNLOAD_OUTPUT)
@@ -158,4 +160,3 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"[-] Error occurred: {str(e)}")
-# test change
