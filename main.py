@@ -41,7 +41,7 @@ def get_viral_cartoon_url():
             for entry in result['entries']:
                 duration = entry.get('duration', 0)
                 if 120 <= duration <= 360:
-                    # Bilkul safe and standard watch link format
+                    # Galti se bachne ke liye safe full watch link format
                     video_url = f"https://youtube.com{entry['id']}"
                     print(f"[+] Found Viral Video: {entry.get('title')}")
                     print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
@@ -58,9 +58,11 @@ def get_viral_cartoon_url():
 def download_video(url, output_path):
     print(f"[*] Downloading video from: {url}")
     ydl_opts = {
+        # Fast download aur safe encoding ke liye settings
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
-        'quiet': True
+        'quiet': True,
+        'nocheckcertificate': True
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -97,10 +99,13 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
+    # transfer.sh ke bajaye bashupload use kar rahe hain jo zada stable hai GitHub actions par
     filename = os.path.basename(file_path)
+    url = f"https://bashupload.com{filename}"
+    
     with open(file_path, 'rb') as f:
-        # Link ko '/' ke sath mazeed secure kiya
-        response = requests.put(f"https://transfer.sh{filename}", data=f)
+        response = requests.put(url, data=f)
+        
     if response.status_code == 200:
         public_url = response.text.strip()
         print(f"[+] Public Video URL: {public_url}")
