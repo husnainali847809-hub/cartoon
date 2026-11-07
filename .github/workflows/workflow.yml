@@ -2,9 +2,14 @@ name: Automated Cartoon Shorts Bot
 
 on:
   schedule:
-    # Yeh cron job har roz Pakistan ke time ke mutabiq dopehar 12:00 baje (07:00 UTC) automatic chalegi
-    - cron: '0 7 * * *'
-  workflow_dispatch: # Isse aap GitHub par manual button daba kar bhi jab chahein chala sakte hain
+    # Yeh cron jobs har roz din mein 5 dafa chalengi (Pakistan Time ke mutabiq set hain)
+    - cron: '0 4 * * *'  # 1. Subah 09:00 AM PKT (04:00 UTC)
+    - cron: '0 7 * * *'  # 2. Dopehar 12:00 PM PKT (07:00 UTC)
+    - cron: '0 10 * * *' # 3. Sehpar 03:00 PM PKT (10:00 UTC)
+    - cron: '0 13 * * *' # 4. Shaam 06:00 PM PKT (13:00 UTC)
+    - cron: '0 16 * * *' # 5. Raat 09:00 PM PKT (16:00 UTC)
+  
+  workflow_dispatch: # Isse aap jab chahein manual button daba kar bhi chala sakte hain
 
 jobs:
   build-and-run:
