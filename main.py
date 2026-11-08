@@ -3,7 +3,7 @@ import json
 import random
 import requests
 from urllib.parse import quote
-from moviepy import VideoFileClip
+from moviepy import VideoFileClip, ColorClip, CompositeVideoClip
 
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")  # legacy fallback only
@@ -42,6 +42,84 @@ def parse_runtime(value):
         return nums[0] * 3600 + nums[1] * 60 + nums[2]
     if len(nums) == 2:
         return nums[0] * 60 + nums[1]
+    return None
+
+
+def is_reusable_license(value):
+    """Allow only explicit Public Domain, CC0, CC BY, or CC BY-SA metadata."""
+    text_value = str(value or "").lower().replace("_", "-")
+    if not text_value.strip():
+        return False
+    if "public domain" in text_value or "publicdomain" in text_value:
+        return True
+    if "cc0" in text_value or "creativecommons.org/publicdomain/zero" in text_value:
+        return True
+    if "creativecommons.org/licenses/by-sa/" in text_value:
+        return True
+    if "creativecommons.org/licenses/by/" in text_value:
+        return True
+    if "cc by-sa" in text_value or "cc by sa" in text_value:
+        return True
+    if "cc by" in text_value and "by-nc" not in text_value and "by-nd" not in text_value:
+        return True
+    return False
+
+
+def get_wikimedia_cartoon_url():
+    """Find a video on Wikimedia Commons with an explicit reusable license."""
+    print("[*] Trying Wikimedia Commons as an additional cartoon source...")
+    api_url = "https://commons.wikimedia.org/w/api.php"
+    search_terms = ["cartoon animation", "animated film", "2D animation"]
+    headers = {"User-Agent": "CartoonShortsBot/1.0 (automated media search)"}
+
+    for term in search_terms:
+        params = {
+            "action": "query",
+            "format": "json",
+            "generator": "search",
+            "gsrsearch": f"filemime:video/mp4 {term}",
+            "gsrnamespace": 6,
+            "gsrlimit": 30,
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata",
+        }
+        try:
+            response = requests.get(api_url, params=params, headers=headers, timeout=30)
+            response.raise_for_status()
+            pages = (response.json().get("query") or {}).get("pages") or {}
+            candidates = list(pages.values())
+            random.shuffle(candidates)
+
+            for page in candidates:
+                info_list = page.get("imageinfo") or []
+                if not info_list:
+                    continue
+                info = info_list[0]
+                video_url = info.get("url", "")
+                if not video_url.lower().split("?")[0].endswith(".mp4"):
+                    continue
+
+                metadata = info.get("extmetadata") or {}
+                license_name = (
+                    (metadata.get("LicenseShortName") or {}).get("value")
+                    or (metadata.get("License") or {}).get("value")
+                    or ""
+                )
+                license_url = (metadata.get("LicenseUrl") or {}).get("value", "")
+                rights_text = f"{license_name} {license_url}"
+                if not is_reusable_license(rights_text):
+                    continue
+
+                title = page.get("title", "Wikimedia Commons animation")
+                creator = (metadata.get("Artist") or {}).get("value", "Wikimedia Commons contributor")
+                source_page = "https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_"))
+                print(f"[+] Wikimedia video found: {title}")
+                print(f"[+] Explicit license: {license_name}")
+                return video_url, title, source_page, str(creator), str(license_name)
+
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            print(f"[!] Wikimedia Commons search issue for '{term}': {exc}")
+
     return None
 
 
@@ -104,7 +182,10 @@ def get_viral_cartoon_url():
             if isinstance(creator, list):
                 creator = ", ".join(str(x) for x in creator[:2])
             source_page = f"https://archive.org/details/{quote(identifier)}"
-            rights_info = metadata.get("licenseurl") or metadata.get("rights") or "Not specified in Archive.org metadata"
+            rights_info = metadata.get("licenseurl") or metadata.get("rights") or ""
+            if not is_reusable_license(rights_info):
+                print(f"[!] Skipping {identifier}: no explicitly accepted reuse license ({rights_info or 'missing'})")
+                continue
 
             print(f"[+] Video found: {title}")
             print(f"[+] Rights metadata: {rights_info}")
@@ -115,8 +196,12 @@ def get_viral_cartoon_url():
             print(f"[!] Skipping Archive.org item {identifier}: {exc}")
             continue
 
+    commons_result = get_wikimedia_cartoon_url()
+    if commons_result:
+        return commons_result
+
     raise RuntimeError(
-        "Internet Archive par is waqt suitable downloadable MP4 nahi mila. Agli scheduled run par dobara try hoga."
+        "Internet Archive aur Wikimedia Commons par is waqt suitable, explicitly licensed MP4 nahi mila. Agli scheduled run par dobara try hoga."
     )
 
 
@@ -137,32 +222,68 @@ def download_video(url, output_path):
 
 
 def convert_to_vertical_short(input_path, output_path, duration=120):
-    print(f"[*] Processing video to 9:16 format ({duration} seconds)...")
-    clip = VideoFileClip(input_path)
+    """
+    Create a full 9:16 Reel canvas at 1080x1920.
+    Keep the original cartoon fully visible, centered, and smaller than the
+    canvas; use black space around it instead of cropping important content.
+    """
+    output_w, output_h = 1080, 1920
+    max_video_w, max_video_h = 900, 1600
 
-    start_time = 10 if clip.duration > duration + 10 else 0
-    end_time = min(clip.duration, start_time + duration)
-    clip = clip.subclipped(start_time, end_time)
+    print(
+        f"[*] Processing video: 9:16 canvas {output_w}x{output_h}; "
+        f"cartoon fitted inside {max_video_w}x{max_video_h}..."
+    )
+    source = VideoFileClip(input_path)
+    start_time = 10 if source.duration > duration + 10 else 0
+    end_time = min(source.duration, start_time + duration)
+    clip = source.subclipped(start_time, end_time)
 
     original_w, original_h = clip.size
-    target_w = min(original_w, int(original_h * (9 / 16)))
-    if target_w < 2:
+    if original_w < 2 or original_h < 2:
+        source.close()
         clip.close()
         raise RuntimeError("Source video dimensions are invalid.")
 
-    cropped_clip = clip.cropped(
-        x_center=original_w / 2,
-        y_center=original_h / 2,
-        width=target_w,
-        height=original_h,
+    scale = min(max_video_w / original_w, max_video_h / original_h)
+    fitted_w = max(2, int(original_w * scale))
+    fitted_h = max(2, int(original_h * scale))
+    fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
+
+    background = ColorClip(
+        size=(output_w, output_h),
+        color=(0, 0, 0),
+        duration=float(clip.duration),
     )
-    cropped_clip.write_videofile(
-        output_path, codec="libx264", audio_codec="aac", fps=30
+    composed = CompositeVideoClip(
+        [
+            background,
+            fitted_clip.with_position(("center", "center")),
+        ],
+        size=(output_w, output_h),
     )
-    processed_duration = float(cropped_clip.duration)
+
+    composed.write_videofile(
+        output_path,
+        codec="libx264",
+        audio_codec="aac",
+        fps=30,
+        preset="medium",
+        bitrate="4500k",
+        audio_bitrate="128k",
+    )
+
+    processed_duration = float(composed.duration)
+    composed.close()
+    background.close()
+    fitted_clip.close()
     clip.close()
-    cropped_clip.close()
-    print(f"[+] Video processing complete! Duration: {processed_duration:.2f} seconds")
+    source.close()
+    print(
+        f"[+] Video processing complete: {output_w}x{output_h} (9:16), "
+        f"cartoon fitted at {fitted_w}x{fitted_h}, "
+        f"duration {processed_duration:.2f}s"
+    )
     return processed_duration
 
 
