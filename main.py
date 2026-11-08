@@ -1,182 +1,257 @@
 import os
 import random
-import tempfile
-import atexit
+import re
 import requests
-import yt_dlp
+from urllib.parse import quote
 from moviepy import VideoFileClip
 
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
 BUFFER_PROFILE_ID = os.getenv("BUFFER_PROFILE_ID")
 
-# Optional Netscape-format YouTube cookies supplied through GitHub Actions Secret.
-YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "").strip()
-YOUTUBE_COOKIE_FILE = None
-if YOUTUBE_COOKIES:
-    cookie_handle = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".txt", prefix="yt-cookies-", delete=False
-    )
-    cookie_handle.write(YOUTUBE_COOKIES)
-    cookie_handle.close()
-    YOUTUBE_COOKIE_FILE = cookie_handle.name
-    atexit.register(lambda: os.path.exists(YOUTUBE_COOKIE_FILE) and os.remove(YOUTUBE_COOKIE_FILE))
-    print("[+] YouTube cookies loaded from GitHub Secret (contents hidden).")
-else:
-    print("[!] YOUTUBE_COOKIES secret not set; YouTube may reject automated downloads.")
-
-# Viral aur famous cartoons ke automatic search keywords
-CARTOON_KEYWORDS = [
-    "tom and jerry classic full episodes cartoon",
-    "mr bean cartoon full episodes funny",
-    "oggy and the cockroaches latest episode",
-    "looney tunes funny cartoon moments",
-    "motu patlu new episodes hindi cartoon"
-]
+ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
+ARCHIVE_METADATA_URL = "https://archive.org/metadata/{}"
+ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
 
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
+
+# Only explicitly reusable licenses are accepted. Unknown/missing licenses are skipped.
+ALLOWED_LICENSE_MARKERS = (
+    "creativecommons.org/publicdomain/zero",
+    "creativecommons.org/licenses/by/",
+    "creativecommons.org/licenses/by-sa/",
+    "creativecommons.org/licenses/by/4",
+    "creativecommons.org/licenses/by-sa/4",
+)
+
+SEARCH_TERMS = [
+    'mediatype:movies AND (subject:"cartoons" OR subject:"animation" OR title:cartoon)',
+    'mediatype:movies AND (subject:"animated films" OR title:"animated")',
+]
 # =======================================================
 
+
+def license_is_reusable(metadata):
+    license_url = str(metadata.get("licenseurl", "")).lower().strip()
+    rights = str(metadata.get("rights", "")).lower().strip()
+
+    if any(marker in license_url for marker in ALLOWED_LICENSE_MARKERS):
+        return license_url
+
+    # Accept clear public-domain declarations only; do not guess from a blank license.
+    if "public domain" in rights and ("archive.org" in rights or "public domain" in rights):
+        return "Public Domain (metadata rights declaration)"
+
+    return None
+
+
+def parse_runtime(value):
+    """Convert Archive.org runtime values (HH:MM:SS, MM:SS or seconds) to seconds."""
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+
+    parts = str(value).strip().split(":")
+    try:
+        nums = [int(part) for part in parts]
+    except ValueError:
+        return None
+
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    return None
+
+
 def get_viral_cartoon_url():
-    """Keywords mein se random select karke 2 se 6 min ki viral video dhoondna"""
-    selected_search = random.choice(CARTOON_KEYWORDS)
-    print(f"[*] Searching YouTube for viral content: '{selected_search}'")
-    
-    ydl_opts = {
-        'js_runtimes': {'node': {}},
-        **({'cookiefile': YOUTUBE_COOKIE_FILE} if YOUTUBE_COOKIE_FILE else {}),
-        'default_search': 'ytsearch',
-        'extract_flat': True,
-        'playlistend': 5,
-        'quiet': True
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        search_query = f"ytsearch5:{selected_search}"
-        result = ydl.extract_info(search_query, download=False)
-        
-        if 'entries' in result and len(result['entries']) > 0:
-            # 1. Pehle duration matching video dhoondte hain
-            for entry in result['entries']:
-                if entry and isinstance(entry, dict):
-                    duration = entry.get('duration', 0)
-                    video_id = entry.get('id')
-                    if video_id and 120 <= duration <= 360:
-                        # FIXED: Sahi URL format laga diya
-                        video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
-                        print(f"[+] Found Viral Video: {entry.get('title')}")
-                        print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
-                        print(f"[+] Direct URL: {video_url}")
-                        return video_url, entry.get('title')
-            
-            # 2. Backup agar duration criteria match na ho
-            top_entry = result['entries'][0]
-            video_id = top_entry.get('id')
-            # FIXED: Backup ke liye bhi sahi format lagaya
-            video_url = top_entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
-            print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
-            print(f"[+] Direct URL: {video_url}")
-            return video_url, top_entry.get('title')
-        else:
-            raise Exception("YouTube search se koi video nahi mil saki.")
+    """Find a downloadable cartoon on Internet Archive with an explicit reusable license."""
+    print("[*] Searching Internet Archive for reusable cartoon videos...")
+    candidates = []
+
+    for search_term in SEARCH_TERMS:
+        params = {
+            "q": search_term,
+            "fl[]": ["identifier", "title"],
+            "rows": 50,
+            "page": 1,
+            "output": "json",
+            "sort[]": "downloads desc",
+        }
+        response = requests.get(ARCHIVE_SEARCH_URL, params=params, timeout=30)
+        response.raise_for_status()
+        docs = response.json().get("response", {}).get("docs", [])
+        candidates.extend(docs)
+
+    # Remove duplicate identifiers and randomize among popular search results.
+    unique = {}
+    for item in candidates:
+        if item.get("identifier"):
+            unique[item["identifier"]] = item
+    candidate_list = list(unique.values())
+    random.shuffle(candidate_list)
+
+    for item in candidate_list:
+        identifier = item["identifier"]
+        try:
+            response = requests.get(ARCHIVE_METADATA_URL.format(quote(identifier)), timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            metadata = data.get("metadata", {})
+            reusable_license = license_is_reusable(metadata)
+            if not reusable_license:
+                continue
+
+            runtime = parse_runtime(metadata.get("runtime"))
+            if runtime is not None and not 60 <= runtime <= 900:
+                continue
+
+            files = data.get("files", [])
+            mp4_files = [
+                f for f in files
+                if str(f.get("name", "")).lower().endswith(".mp4")
+                and str(f.get("name", "")).lower() not in ("__ia_thumb.jpg",)
+                and (not f.get("size") or int(f.get("size", 0)) <= 1_000_000_000)
+            ]
+            if not mp4_files:
+                continue
+
+            # Prefer the largest suitable MP4, which is usually the full-quality source.
+            selected_file = max(mp4_files, key=lambda f: int(f.get("size", 0) or 0))
+            filename = selected_file["name"]
+            video_url = ARCHIVE_DOWNLOAD_URL.format(
+                quote(identifier), quote(filename, safe="/")
+            )
+            title = str(metadata.get("title") or item.get("title") or identifier)
+            creator = metadata.get("creator", "Unknown")
+            if isinstance(creator, list):
+                creator = ", ".join(str(x) for x in creator[:2])
+            source_page = f"https://archive.org/details/{quote(identifier)}"
+
+            print(f"[+] Reusable video found: {title}")
+            print(f"[+] License: {reusable_license}")
+            print(f"[+] Source: {source_page}")
+            return video_url, title, source_page, str(creator), reusable_license
+
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            print(f"[!] Skipping Archive.org item {identifier}: {exc}")
+            continue
+
+    raise RuntimeError(
+        "Internet Archive par is waqt explicit reusable license wala suitable MP4 nahi mila. "
+        "Agli scheduled run par dobara try hoga."
+    )
+
 
 def download_video(url, output_path):
-    print(f"[*] Downloading video from: {url}")
-    ydl_opts = {
-        'js_runtimes': {'node': {}},
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': output_path,
-        'quiet': True,
-        'nocheckcertificate': True
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    print("[*] Downloading video from Internet Archive...")
+    with requests.get(url, stream=True, timeout=(30, 180)) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+            raise RuntimeError("Archive.org ne video ke bajaye HTML page return kiya.")
+        with open(output_path, "wb") as file_handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    file_handle.write(chunk)
+    if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
+        raise RuntimeError("Downloaded file empty ya incomplete hai.")
     print("[+] Download complete!")
+
 
 def convert_to_vertical_short(input_path, output_path, duration=120):
     print(f"[*] Processing video to 9:16 format ({duration} seconds)...")
     clip = VideoFileClip(input_path)
-    
-    start_time = 10
-    if clip.duration > duration + start_time:
-        clip = clip.subclip(start_time, duration + start_time)
-    else:
-        clip = clip.subclip(0, min(clip.duration, duration))
-        
+
+    start_time = 10 if clip.duration > duration + 10 else 0
+    end_time = min(clip.duration, start_time + duration)
+    clip = clip.subclipped(start_time, end_time)
+
     original_w, original_h = clip.size
-    target_w = int(original_h * (9 / 16))
-    
-    if target_w > original_w:
-        target_w = original_w
-        target_h = int(original_w * (16 / 9))
-        clip = clip.resized(height=target_h)
-        original_w, original_h = clip.size
-    
-    x_center = original_w / 2
-    y_center = original_h / 2
-    
-    cropped_clip = clip.cropped(x_center=x_center, y_center=y_center, width=target_w, height=original_h)
-    cropped_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=30)
-    
+    target_w = min(original_w, int(original_h * (9 / 16)))
+    if target_w < 2:
+        clip.close()
+        raise RuntimeError("Source video dimensions are invalid.")
+
+    cropped_clip = clip.cropped(
+        x_center=original_w / 2,
+        y_center=original_h / 2,
+        width=target_w,
+        height=original_h,
+    )
+    cropped_clip.write_videofile(
+        output_path, codec="libx264", audio_codec="aac", fps=30
+    )
     clip.close()
     cropped_clip.close()
     print("[+] Video processing complete!")
 
+
 def upload_to_temp_host(file_path):
     print("[*] Uploading video to temporary cloud storage for Buffer...")
     filename = os.path.basename(file_path)
-    url = f"https://bashupload.com{filename}"
-    
-    with open(file_path, 'rb') as f:
-        response = requests.put(url, data=f)
-        
+    url = f"https://bashupload.com/{filename}"
+
+    with open(file_path, "rb") as file_handle:
+        response = requests.put(url, data=file_handle, timeout=180)
+
     if response.status_code == 200:
         public_url = response.text.strip()
-        print(f"[+] Public Video URL: {public_url}")
-        return public_url
-    else:
-        raise Exception("Temporary cloud upload failed.")
+        if public_url.startswith("http"):
+            print(f"[+] Public Video URL: {public_url}")
+            return public_url
+    raise RuntimeError(f"Temporary cloud upload failed: HTTP {response.status_code}")
+
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
-    url = "https://bufferapp.com"
-    
+    url = "https://api.bufferapp.com/1/updates/create.json"
     payload = {
-        'profile_ids[]': [BUFFER_PROFILE_ID],
-        'text': caption,
-        'shorten': 'false',
-        'now': 'false',
-        'media[video]': video_url
+        "profile_ids[]": [BUFFER_PROFILE_ID],
+        "text": caption,
+        "shorten": "false",
+        "now": "false",
+        "media[video]": video_url,
     }
-    
-    headers = {
-        'Authorization': f'Bearer {BUFFER_ACCESS_TOKEN}'
-    }
-    
-    response = requests.post(url, data=payload, headers=headers).json()
-    
-    if 'updates' in response or response.get('success') == True:
-        print("[++++] Mubarak ho! Video successfully Buffer queue mein add ho gayi hai.")
-    else:
-        print(f"[-] Buffer Error: {response}")
+    headers = {"Authorization": f"Bearer {BUFFER_ACCESS_TOKEN}"}
+    response = requests.post(url, data=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+    result = response.json()
+
+    if result.get("success") or result.get("updates"):
+        print("[++++] Video successfully Buffer queue mein add ho gayi hai.")
+        return
+    raise RuntimeError(f"Buffer ne post accept nahi ki: {result}")
+
 
 if __name__ == "__main__":
     try:
         if not BUFFER_ACCESS_TOKEN or not BUFFER_PROFILE_ID:
-            raise Exception("Missing Buffer Access Token or Profile ID in environment variables.")
-            
-        target_video_url, video_title = get_viral_cartoon_url()
+            raise RuntimeError("Missing Buffer Access Token or Profile ID in GitHub Secrets.")
+
+        target_video_url, video_title, source_page, creator, license_name = get_viral_cartoon_url()
         download_video(target_video_url, DOWNLOAD_OUTPUT)
         convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120)
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
-        
-        video_caption = f"✨ {video_title} ✨\nEnjoy this classic cartoon moment! #Cartoons #Reels"
+
+        video_caption = (
+            f"✨ {video_title} ✨\n"
+            f"Source: {source_page}\n"
+            f"Creator: {creator}\n"
+            f"License: {license_name}\n"
+            "#Cartoons #Animation #Reels"
+        )
         send_to_buffer(public_video_url, video_caption)
-        
-        if os.path.exists(DOWNLOAD_OUTPUT): os.remove(DOWNLOAD_OUTPUT)
-        if os.path.exists(SHORTS_OUTPUT): os.remove(SHORTS_OUTPUT)
+
+        for path in (DOWNLOAD_OUTPUT, SHORTS_OUTPUT):
+            if os.path.exists(path):
+                os.remove(path)
         print("[+] Automation task finished successfully.")
-        
-    except Exception as e:
-        print(f"[-] Error occurred: {str(e)}")
+
+    except Exception as exc:
+        print(f"[-] Automation failed: {exc}")
+        raise
