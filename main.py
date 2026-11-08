@@ -27,6 +27,7 @@ def get_viral_cartoon_url():
     print(f"[*] Searching YouTube for viral content: '{selected_search}'")
     
     ydl_opts = {
+        'js_runtimes': {'node': {}},
         'default_search': 'ytsearch',
         'extract_flat': True,
         'playlistend': 5,
@@ -65,6 +66,7 @@ def get_viral_cartoon_url():
 def download_video(url, output_path):
     print(f"[*] Downloading video from: {url}")
     ydl_opts = {
+        'js_runtimes': {'node': {}},
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
         'quiet': True,
