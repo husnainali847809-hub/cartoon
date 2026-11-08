@@ -45,7 +45,7 @@ def get_viral_cartoon_url():
                     video_id = entry.get('id')
                     if video_id and 120 <= duration <= 360:
                         # FIXED: Sahi URL format laga diya
-                        video_url = f"https://youtube.com{video_id}"
+                        video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
                         print(f"[+] Found Viral Video: {entry.get('title')}")
                         print(f"[+] Video Duration: {int(duration/60)} min {int(duration%60)} sec")
                         print(f"[+] Direct URL: {video_url}")
@@ -55,7 +55,7 @@ def get_viral_cartoon_url():
             top_entry = result['entries'][0]
             video_id = top_entry.get('id')
             # FIXED: Backup ke liye bhi sahi format lagaya
-            video_url = f"https://youtube.com{video_id}"
+            video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             print(f"[+] Direct URL: {video_url}")
             return video_url, top_entry.get('title')
