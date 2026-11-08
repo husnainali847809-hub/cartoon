@@ -161,7 +161,11 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
     )
     clip.close()
     cropped_clip.close()
-    print("[+] Video processing complete!")
+    processed_duration = float(cropped_clip.duration)
+    clip.close()
+    cropped_clip.close()
+    print(f"[+] Video processing complete! Duration: {processed_duration:.2f} seconds")
+    return processed_duration
 
 
 def upload_to_temp_host(file_path):
@@ -371,14 +375,18 @@ def resolve_buffer_channel(api_key):
     )
 
 
-def send_to_buffer(video_url, caption, video_title):
-    print("[*] Sending video post to Buffer Queue (current GraphQL API)...")
+def send_to_buffer(video_url, caption, video_title, post_type):
+    """Queue one Facebook video with an explicit Facebook post type."""
+    print(f"[*] Sending Facebook {post_type} video to Buffer Queue...")
     api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
     if not api_key:
         raise RuntimeError(
             "Missing Buffer API key. Add GitHub Actions secret BUFFER_API_KEY "
             "(Buffer Settings > API)."
         )
+
+    if post_type not in ("post", "story", "reel"):
+        raise ValueError(f"Unsupported Facebook post type: {post_type}")
 
     channel_id = resolve_buffer_channel(api_key)
     safe_text = json.dumps(caption, ensure_ascii=False)
@@ -392,6 +400,11 @@ def send_to_buffer(video_url, caption, video_title):
         channelId: "{channel_id}"
         schedulingType: automatic
         mode: addToQueue
+        metadata: {{
+          facebook: {{
+            type: {post_type}
+          }}
+        }}
         assets: [
           {{
             video: {{
@@ -420,13 +433,13 @@ def send_to_buffer(video_url, caption, video_title):
     post = result.get("post")
     if post and post.get("id"):
         print(
-            f"[++++] Video successfully added to Buffer queue. "
+            f"[++++] Facebook {post_type} successfully added to Buffer queue. "
             f"Post ID: {post['id']} | Status: {post.get('status', 'unknown')}"
         )
-        return
+        return post["id"]
 
     message = result.get("message") or "Buffer did not return a successful post."
-    raise RuntimeError(f"Buffer could not queue the video: {message}")
+    raise RuntimeError(f"Buffer could not queue the Facebook {post_type}: {message}")
 
 
 if __name__ == "__main__":
@@ -436,7 +449,9 @@ if __name__ == "__main__":
 
         target_video_url, video_title, source_page, creator, license_name = get_viral_cartoon_url()
         download_video(target_video_url, DOWNLOAD_OUTPUT)
-        convert_to_vertical_short(DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120)
+        processed_duration = convert_to_vertical_short(
+            DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120
+        )
         public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
 
         video_caption = (
@@ -446,7 +461,20 @@ if __name__ == "__main__":
             f"License: {license_name}\n"
             "#Cartoons #Animation #Reels"
         )
-        send_to_buffer(public_video_url, video_caption, video_title)
+        if processed_duration <= 60:
+            print(
+                f"[*] Short video detected ({processed_duration:.1f}s). "
+                "Queueing both Facebook Story and Facebook Post."
+            )
+            # Queue separately so Buffer assigns each item its own next queue slot.
+            send_to_buffer(public_video_url, video_caption, video_title, "story")
+            send_to_buffer(public_video_url, video_caption, video_title, "post")
+        else:
+            print(
+                f"[*] Video is longer than 60 seconds ({processed_duration:.1f}s). "
+                "Queueing Facebook Video Post only."
+            )
+            send_to_buffer(public_video_url, video_caption, video_title, "post")
 
         for path in (DOWNLOAD_OUTPUT, SHORTS_OUTPUT):
             if os.path.exists(path):
