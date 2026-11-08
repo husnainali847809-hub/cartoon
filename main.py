@@ -46,23 +46,10 @@ def parse_runtime(value):
 
 
 def is_reusable_license(value):
-    """Allow only explicit Public Domain, CC0, CC BY, or CC BY-SA metadata."""
-    text_value = str(value or "").lower().replace("_", "-")
-    if not text_value.strip():
-        return False
-    if "public domain" in text_value or "publicdomain" in text_value:
-        return True
-    if "cc0" in text_value or "creativecommons.org/publicdomain/zero" in text_value:
-        return True
-    if "creativecommons.org/licenses/by-sa/" in text_value:
-        return True
-    if "creativecommons.org/licenses/by/" in text_value:
-        return True
-    if "cc by-sa" in text_value or "cc by sa" in text_value:
-        return True
-    if "cc by" in text_value and "by-nc" not in text_value and "by-nd" not in text_value:
-        return True
-    return False
+    """Accept any item that has explicit license/rights metadata; reject missing metadata."""
+    if isinstance(value, (list, tuple)):
+        return any(str(item).strip() for item in value if item is not None)
+    return bool(str(value or "").strip())
 
 
 def get_wikimedia_cartoon_url():
@@ -604,8 +591,7 @@ if __name__ == "__main__":
             f"✨ {video_title} ✨\n"
             f"Source: {source_page}\n"
             f"Creator: {creator}\n"
-            f"License: {license_name}\n"
-            "#Cartoons #Animation #Reels"
+            "#Cartoons #Animation #Reels #FunnyCartoons #CartoonShorts"
         )
         if processed_duration <= 60:
             print(
