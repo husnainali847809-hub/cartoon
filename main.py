@@ -1,12 +1,13 @@
 import os
+import json
 import random
 import requests
 from urllib.parse import quote
 from moviepy import VideoFileClip
 
 # ==================== CONFIGURATION ====================
-BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
-BUFFER_PROFILE_ID = os.getenv("BUFFER_PROFILE_ID")
+BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")  # legacy fallback only
+BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID")
 
 ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
 ARCHIVE_METADATA_URL = "https://archive.org/metadata/{}"
@@ -279,31 +280,159 @@ def upload_to_temp_host(file_path):
     print("[!] Anonymous beacon.host links expire after 24 hours; Buffer must publish the queued video before expiry.")
     return public_url
 
-def send_to_buffer(video_url, caption):
-    print("[*] Sending post to Buffer Queue...")
-    url = "https://api.bufferapp.com/1/updates/create.json"
-    payload = {
-        "profile_ids[]": [BUFFER_PROFILE_ID],
-        "text": caption,
-        "shorten": "false",
-        "now": "false",
-        "media[video]": video_url,
-    }
-    headers = {"Authorization": f"Bearer {BUFFER_ACCESS_TOKEN}"}
-    response = requests.post(url, data=payload, headers=headers, timeout=60)
-    response.raise_for_status()
-    result = response.json()
+def buffer_graphql(api_key, query):
+    """Send one authenticated request to Buffer's current GraphQL API."""
+    response = requests.post(
+        "https://api.buffer.com",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={"query": query},
+        timeout=60,
+    )
+    if response.status_code == 401:
+        raise RuntimeError(
+            "Buffer rejected the API key (401 Unauthorized). Add a NEW Buffer API key "
+            "from Buffer Settings > API as the GitHub secret BUFFER_API_KEY. "
+            "The old legacy BUFFER_ACCESS_TOKEN is not a current Buffer API key."
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Buffer GraphQL HTTP {response.status_code}: {response.text[:1000]}"
+        )
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Buffer returned non-JSON response: {response.text[:500]}") from exc
+    if result.get("errors"):
+        messages = "; ".join(
+            str(item.get("message", item)) for item in result["errors"]
+        )
+        raise RuntimeError(f"Buffer GraphQL error: {messages}")
+    return result.get("data") or {}
 
-    if result.get("success") or result.get("updates"):
-        print("[++++] Video successfully Buffer queue mein add ho gayi hai.")
+
+def resolve_buffer_channel(api_key):
+    """Use configured channel ID, or auto-discover if the account has one channel."""
+    if BUFFER_CHANNEL_ID:
+        return BUFFER_CHANNEL_ID
+
+    print("[*] BUFFER_CHANNEL_ID not set; discovering connected Buffer channels...")
+    account_data = buffer_graphql(
+        api_key,
+        "query { account { organizations { id name } } }",
+    )
+    organizations = (account_data.get("account") or {}).get("organizations") or []
+    channels_found = []
+
+    for organization in organizations:
+        org_id = organization.get("id")
+        if not org_id:
+            continue
+        query = f'''
+        query {{
+          channels(input: {{ organizationId: "{org_id}" }}) {{
+            id
+            name
+            service
+            displayName
+          }}
+        }}
+        '''
+        channel_data = buffer_graphql(api_key, query)
+        channels_found.extend(channel_data.get("channels") or [])
+
+    unique_channels = {item.get("id"): item for item in channels_found if item.get("id")}
+    channels_found = list(unique_channels.values())
+
+    if len(channels_found) == 1:
+        channel = channels_found[0]
+        print(
+            f"[+] Automatically selected Buffer channel: "
+            f"{channel.get('displayName') or channel.get('name') or channel.get('service')} "
+            f"({channel['id']})"
+        )
+        return channel["id"]
+
+    if not channels_found:
+        raise RuntimeError(
+            "No connected Buffer channels were found for this API key. "
+            "Check the Buffer account and reconnect the social channel."
+        )
+
+    choices = [
+        f"{item.get('displayName') or item.get('name') or item.get('service')}: {item['id']}"
+        for item in channels_found
+    ]
+    raise RuntimeError(
+        "More than one Buffer channel is connected. Add the intended channel ID "
+        "as GitHub secret BUFFER_CHANNEL_ID. Available channels: " + " | ".join(choices)
+    )
+
+
+def send_to_buffer(video_url, caption, video_title):
+    print("[*] Sending video post to Buffer Queue (current GraphQL API)...")
+    api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
+    if not api_key:
+        raise RuntimeError(
+            "Missing Buffer API key. Add GitHub Actions secret BUFFER_API_KEY "
+            "(Buffer Settings > API)."
+        )
+
+    channel_id = resolve_buffer_channel(api_key)
+    safe_text = json.dumps(caption, ensure_ascii=False)
+    safe_url = json.dumps(video_url)
+    safe_title = json.dumps(video_title, ensure_ascii=False)
+
+    query = f'''
+    mutation CreateCartoonVideoPost {{
+      createPost(input: {{
+        text: {safe_text}
+        channelId: "{channel_id}"
+        schedulingType: automatic
+        mode: addToQueue
+        assets: [
+          {{
+            video: {{
+              url: {safe_url}
+              metadata: {{ title: {safe_title} }}
+            }}
+          }}
+        ]
+      }}) {{
+        ... on PostActionSuccess {{
+          post {{
+            id
+            text
+            status
+          }}
+        }}
+        ... on MutationError {{
+          message
+        }}
+      }}
+    }}
+    '''
+
+    data = buffer_graphql(api_key, query)
+    result = data.get("createPost") or {}
+    post = result.get("post")
+    if post and post.get("id"):
+        print(
+            f"[++++] Video successfully added to Buffer queue. "
+            f"Post ID: {post['id']} | Status: {post.get('status', 'unknown')}"
+        )
         return
-    raise RuntimeError(f"Buffer ne post accept nahi ki: {result}")
+
+    message = result.get("message") or "Buffer did not return a successful post."
+    raise RuntimeError(f"Buffer could not queue the video: {message}")
 
 
 if __name__ == "__main__":
     try:
-        if not BUFFER_ACCESS_TOKEN or not BUFFER_PROFILE_ID:
-            raise RuntimeError("Missing Buffer Access Token or Profile ID in GitHub Secrets.")
+        if not (os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN):
+            raise RuntimeError("Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API.")
 
         target_video_url, video_title, source_page, creator, license_name = get_viral_cartoon_url()
         download_video(target_video_url, DOWNLOAD_OUTPUT)
@@ -317,7 +446,7 @@ if __name__ == "__main__":
             f"License: {license_name}\n"
             "#Cartoons #Animation #Reels"
         )
-        send_to_buffer(public_video_url, video_caption)
+        send_to_buffer(public_video_url, video_caption, video_title)
 
         for path in (DOWNLOAD_OUTPUT, SHORTS_OUTPUT):
             if os.path.exists(path):
