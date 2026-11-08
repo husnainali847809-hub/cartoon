@@ -18,10 +18,10 @@ jobs:
     - name: Check out repository code
       uses: actions/checkout@v4
 
-    - name: Set up Deno JavaScript runtime
-      uses: denoland/setup-deno@v2
+    - name: Set up Node.js JavaScript runtime
+      uses: actions/setup-node@v4
       with:
-        deno-version: v2.x
+        node-version: '22'
 
     - name: Set up Python environment
       uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install --upgrade -r requirements.txt
         python -m pip install --upgrade "yt-dlp[default]"
-        deno --version
+        node --version
         yt-dlp --version
 
     - name: Run Script to Generate and Send Short to Buffer
