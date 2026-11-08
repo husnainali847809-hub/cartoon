@@ -164,19 +164,49 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 
 def upload_to_temp_host(file_path):
-    print("[*] Uploading video to temporary cloud storage for Buffer...")
-    filename = os.path.basename(file_path)
-    url = f"https://bashupload.com/{filename}"
+    """Upload the finished video to Catbox and return its public URL for Buffer."""
+    import time
 
-    with open(file_path, "rb") as file_handle:
-        response = requests.put(url, data=file_handle, timeout=180)
+    print("[*] Uploading video to public cloud storage for Buffer...")
+    upload_url = "https://catbox.moe/user/api.php"
+    last_error = None
 
-    if response.status_code == 200:
-        public_url = response.text.strip()
-        if public_url.startswith("http"):
-            print(f"[+] Public Video URL: {public_url}")
-            return public_url
-    raise RuntimeError(f"Temporary cloud upload failed: HTTP {response.status_code}")
+    # Catbox accepts anonymous multipart uploads and returns a direct public URL.
+    # Retry transient DNS/network/server failures before stopping the workflow.
+    for attempt in range(1, 4):
+        try:
+            with open(file_path, "rb") as file_handle:
+                response = requests.post(
+                    upload_url,
+                    data={"reqtype": "fileupload"},
+                    files={
+                        "fileToUpload": (
+                            os.path.basename(file_path),
+                            file_handle,
+                            "video/mp4",
+                        )
+                    },
+                    timeout=(30, 240),
+                )
+
+            response.raise_for_status()
+            public_url = response.text.strip()
+
+            if response.status_code == 200 and public_url.startswith("https://"):
+                print(f"[+] Public Video URL: {public_url}")
+                return public_url
+
+            raise RuntimeError(
+                f"Catbox returned an invalid upload response: {public_url[:300]}"
+            )
+
+        except (requests.RequestException, OSError, RuntimeError) as exc:
+            last_error = exc
+            print(f"[!] Public video upload attempt {attempt}/3 failed: {exc}")
+            if attempt < 3:
+                time.sleep(10 * attempt)
+
+    raise RuntimeError(f"Public video upload failed after 3 attempts: {last_error}")
 
 
 def send_to_buffer(video_url, caption):
