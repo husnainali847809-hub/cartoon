@@ -159,8 +159,6 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
     cropped_clip.write_videofile(
         output_path, codec="libx264", audio_codec="aac", fps=30
     )
-    clip.close()
-    cropped_clip.close()
     processed_duration = float(cropped_clip.duration)
     clip.close()
     cropped_clip.close()
