@@ -87,19 +87,11 @@ def get_wikimedia_cartoon_url():
                     continue
 
                 metadata = info.get("extmetadata") or {}
-                license_name = (
-                    (metadata.get("LicenseShortName") or {}).get("value")
-                    or (metadata.get("License") or {}).get("value")
-                    or ""
-                )
-                license_url = (metadata.get("LicenseUrl") or {}).get("value", "")
-                # License metadata is optional; do not filter videos based on it.
                 title = page.get("title", "Wikimedia Commons animation")
                 creator = (metadata.get("Artist") or {}).get("value", "Wikimedia Commons contributor")
                 source_page = "https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_"))
                 print(f"[+] Wikimedia video found: {title}")
-                print(f"[+] Explicit license: {license_name}")
-                return video_url, title, source_page, str(creator), str(license_name)
+                return video_url, title, source_page, str(creator)
 
         except (requests.RequestException, ValueError, TypeError) as exc:
             print(f"[!] Wikimedia Commons search issue for '{term}': {exc}")
@@ -170,8 +162,7 @@ def get_viral_cartoon_url():
             # Accept the video regardless of whether Archive.org provides license metadata.
             print(f"[+] Video found: {title}")
             print(f"[+] Source: {source_page}")
-            rights_info = metadata.get("rights") or metadata.get("license") or metadata.get("licenseurl") or "Not specified by Internet Archive"
-            return video_url, title, source_page, str(creator), str(rights_info)
+            return video_url, title, source_page, str(creator)
 
         except (requests.RequestException, ValueError, TypeError) as exc:
             print(f"[!] Skipping Archive.org item {identifier}: {exc}")
@@ -555,7 +546,7 @@ if __name__ == "__main__":
         if not (os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN):
             raise RuntimeError("Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API.")
 
-        target_video_url, video_title, source_page, creator, license_name = get_viral_cartoon_url()
+        target_video_url, video_title, source_page, creator = get_viral_cartoon_url()
         download_video(target_video_url, DOWNLOAD_OUTPUT)
         processed_duration = convert_to_vertical_short(
             DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120
