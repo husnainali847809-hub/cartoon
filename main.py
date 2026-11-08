@@ -1,6 +1,5 @@
 import os
 import random
-import re
 import requests
 from urllib.parse import quote
 from moviepy import VideoFileClip
@@ -16,34 +15,11 @@ ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 
-# Only explicitly reusable licenses are accepted. Unknown/missing licenses are skipped.
-ALLOWED_LICENSE_MARKERS = (
-    "creativecommons.org/publicdomain/zero",
-    "creativecommons.org/licenses/by/",
-    "creativecommons.org/licenses/by-sa/",
-    "creativecommons.org/licenses/by/4",
-    "creativecommons.org/licenses/by-sa/4",
-)
-
 SEARCH_TERMS = [
     'mediatype:movies AND (subject:"cartoons" OR subject:"animation" OR title:cartoon)',
     'mediatype:movies AND (subject:"animated films" OR title:"animated")',
 ]
 # =======================================================
-
-
-def license_is_reusable(metadata):
-    license_url = str(metadata.get("licenseurl", "")).lower().strip()
-    rights = str(metadata.get("rights", "")).lower().strip()
-
-    if any(marker in license_url for marker in ALLOWED_LICENSE_MARKERS):
-        return license_url
-
-    # Accept clear public-domain declarations only; do not guess from a blank license.
-    if "public domain" in rights and ("archive.org" in rights or "public domain" in rights):
-        return "Public Domain (metadata rights declaration)"
-
-    return None
 
 
 def parse_runtime(value):
@@ -69,8 +45,8 @@ def parse_runtime(value):
 
 
 def get_viral_cartoon_url():
-    """Find a downloadable cartoon on Internet Archive with an explicit reusable license."""
-    print("[*] Searching Internet Archive for reusable cartoon videos...")
+    """Find a downloadable cartoon video on Internet Archive."""
+    print("[*] Searching Internet Archive for cartoon videos...")
     candidates = []
 
     for search_term in SEARCH_TERMS:
@@ -102,10 +78,6 @@ def get_viral_cartoon_url():
             response.raise_for_status()
             data = response.json()
             metadata = data.get("metadata", {})
-            reusable_license = license_is_reusable(metadata)
-            if not reusable_license:
-                continue
-
             runtime = parse_runtime(metadata.get("runtime"))
             if runtime is not None and not 60 <= runtime <= 900:
                 continue
@@ -131,19 +103,19 @@ def get_viral_cartoon_url():
             if isinstance(creator, list):
                 creator = ", ".join(str(x) for x in creator[:2])
             source_page = f"https://archive.org/details/{quote(identifier)}"
+            rights_info = metadata.get("licenseurl") or metadata.get("rights") or "Not specified in Archive.org metadata"
 
-            print(f"[+] Reusable video found: {title}")
-            print(f"[+] License: {reusable_license}")
+            print(f"[+] Video found: {title}")
+            print(f"[+] Rights metadata: {rights_info}")
             print(f"[+] Source: {source_page}")
-            return video_url, title, source_page, str(creator), reusable_license
+            return video_url, title, source_page, str(creator), str(rights_info)
 
         except (requests.RequestException, ValueError, TypeError) as exc:
             print(f"[!] Skipping Archive.org item {identifier}: {exc}")
             continue
 
     raise RuntimeError(
-        "Internet Archive par is waqt explicit reusable license wala suitable MP4 nahi mila. "
-        "Agli scheduled run par dobara try hoga."
+        "Internet Archive par is waqt suitable downloadable MP4 nahi mila. Agli scheduled run par dobara try hoga."
     )
 
 
