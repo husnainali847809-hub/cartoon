@@ -164,49 +164,120 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 
 def upload_to_temp_host(file_path):
-    """Upload the finished video to Catbox and return its permanent public URL."""
-    import time
+    """Publish a video through beacon.host's large-file API and return its public URL.
 
-    print("[*] Uploading video to Catbox (permanent public link)...")
-    upload_url = "https://catbox.moe/user/api.php"
-    last_error = None
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; CartoonShortsBot/1.0)",
-    }
+    Anonymous beacon.host uploads are public for 24 hours. The three-step API
+    supports files up to 250 MB without an account.
+    """
+    import hashlib
+    import mimetypes
 
-    for attempt in range(1, 4):
-        try:
-            with open(file_path, "rb") as file_handle:
-                response = requests.post(
-                    upload_url,
-                    data={"reqtype": "fileupload"},
-                    files={"fileToUpload": (os.path.basename(file_path), file_handle, "video/mp4")},
-                    headers=headers,
-                    timeout=(30, 600),
-                )
+    print("[*] Uploading video to beacon.host (large-file upload)...")
+    file_size = os.path.getsize(file_path)
+    max_size = 250 * 1024 * 1024
+    if file_size <= 0:
+        raise RuntimeError("Video file is empty; cannot upload.")
+    if file_size > max_size:
+        raise RuntimeError(
+            f"Video is {file_size / (1024 * 1024):.1f} MB; beacon.host anonymous limit is 250 MB."
+        )
 
-            if response.status_code == 200:
-                public_url = response.text.strip()
-                if public_url.startswith("https://files.catbox.moe/"):
-                    print(f"[+] Public Video URL: {public_url}")
-                    print("[+] Permanent Catbox video link created.")
-                    return public_url
-                raise RuntimeError(
-                    f"Catbox returned an invalid upload response: {public_url[:500]}"
-                )
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    sha256_hash = digest.hexdigest()
+    content_type = mimetypes.guess_type(file_path)[0] or "video/mp4"
+    filename = os.path.basename(file_path)
 
-            body = response.text.strip().replace("\\n", " ")[:500]
-            raise RuntimeError(
-                f"Catbox HTTP {response.status_code}: {body or response.reason}"
+    # Step 1: Register the file and request a presigned storage URL.
+    create_response = requests.post(
+        "https://beacon.host/v1/sites",
+        json={
+            "files": [{
+                "path": filename,
+                "size": file_size,
+                "contentType": content_type,
+                "hash": f"sha256:{sha256_hash}",
+            }]
+        },
+        headers={"User-Agent": "CartoonShortsBot/1.0"},
+        timeout=(30, 90),
+    )
+    if create_response.status_code not in (200, 201):
+        raise RuntimeError(
+            f"beacon.host registration failed: HTTP {create_response.status_code}: "
+            f"{create_response.text[:500]}"
+        )
+
+    try:
+        registration = create_response.json()
+        site = registration["site"]
+        version = registration["version"]
+        pending_uploads = registration.get("uploads", {}).get("pending", [])
+        skipped_uploads = registration.get("uploads", {}).get("skipped", [])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"beacon.host returned an unexpected registration response: {create_response.text[:500]}"
+        ) from exc
+
+    # A matching hash may already exist, in which case no upload is needed.
+    if pending_uploads:
+        pending = next(
+            (item for item in pending_uploads if item.get("path") == filename),
+            pending_uploads[0],
+        )
+        upload_url = pending.get("uploadUrl")
+        if not upload_url:
+            raise RuntimeError("beacon.host did not provide a presigned upload URL.")
+
+        # Step 2: Upload the binary file directly to the presigned storage URL.
+        with open(file_path, "rb") as file_handle:
+            upload_response = requests.put(
+                upload_url,
+                data=file_handle,
+                headers={"Content-Type": content_type},
+                timeout=(30, 600),
             )
+        if upload_response.status_code not in (200, 201, 204):
+            raise RuntimeError(
+                f"beacon.host file transfer failed: HTTP {upload_response.status_code}: "
+                f"{upload_response.text[:500]}"
+            )
+    elif not skipped_uploads:
+        raise RuntimeError("beacon.host response contained neither pending nor skipped files.")
 
-        except (requests.RequestException, OSError, RuntimeError) as exc:
-            last_error = exc
-            print(f"[!] Public video upload attempt {attempt}/3 failed: {exc}")
-            if attempt < 3:
-                time.sleep(10 * attempt)
+    # Step 3: Finalize the site so its public URL becomes available.
+    finalize_path = version.get("finalizeUrl")
+    if not finalize_path:
+        raise RuntimeError("beacon.host did not provide a finalize URL.")
+    finalize_url = (
+        finalize_path if finalize_path.startswith("https://")
+        else "https://beacon.host" + finalize_path
+    )
+    finalize_response = requests.post(
+        finalize_url,
+        headers={"X-Claim-Token": registration.get("claimToken", "")},
+        timeout=(30, 90),
+    )
+    if finalize_response.status_code not in (200, 201):
+        raise RuntimeError(
+            f"beacon.host finalize failed: HTTP {finalize_response.status_code}: "
+            f"{finalize_response.text[:500]}"
+        )
 
-    raise RuntimeError(f"Public video upload failed after 3 attempts: {last_error}")
+    public_url = f"{site['url'].rstrip('/')}/{quote(filename)}"
+    verify_response = requests.head(public_url, allow_redirects=True, timeout=30)
+    if verify_response.status_code >= 400:
+        raise RuntimeError(
+            f"beacon.host published the site but video URL verification failed: "
+            f"HTTP {verify_response.status_code}"
+        )
+
+    print(f"[+] Public Video URL: {public_url}")
+    print("[+] beacon.host upload and public-link verification complete.")
+    print("[!] Anonymous beacon.host links expire after 24 hours; Buffer must publish the queued video before expiry.")
+    return public_url
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
