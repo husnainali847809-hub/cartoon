@@ -228,11 +228,19 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
     canvas; use black space around it instead of cropping important content.
     """
     output_w, output_h = 1080, 1920
-    max_video_w, max_video_h = 900, 1600
+
+    # Randomly use one of two centered cartoon sizes on the same 9:16 Reel canvas.
+    # The source aspect ratio is preserved in both modes.
+    size_modes = [
+        ("large", 900, 1600),
+        ("compact", 720, 1280),
+    ]
+    selected_mode, max_video_w, max_video_h = random.choice(size_modes)
 
     print(
         f"[*] Processing video: 9:16 canvas {output_w}x{output_h}; "
-        f"cartoon fitted inside {max_video_w}x{max_video_h}..."
+        f"random {selected_mode} cartoon size, fitted inside "
+        f"{max_video_w}x{max_video_h}..."
     )
     source = VideoFileClip(input_path)
     start_time = 10 if source.duration > duration + 10 else 0
