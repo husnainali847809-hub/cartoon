@@ -164,36 +164,40 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 
 def upload_to_temp_host(file_path):
-    """Upload the finished video to Litterbox for 24 hours and return its public URL."""
+    """Upload the finished video to Catbox and return its permanent public URL."""
     import time
 
-    print("[*] Uploading video to Litterbox (24-hour temporary link)...")
-    upload_url = "https://litterbox.catbox.moe/resources/api.php"
+    print("[*] Uploading video to Catbox (permanent public link)...")
+    upload_url = "https://catbox.moe/user/api.php"
     last_error = None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; CartoonShortsBot/1.0)",
+    }
 
     for attempt in range(1, 4):
         try:
             with open(file_path, "rb") as file_handle:
                 response = requests.post(
                     upload_url,
-                    data={"reqtype": "fileupload", "time": "24h"},
-                    files={"fileToUpload": file_handle},
-                    timeout=(30, 300),
+                    data={"reqtype": "fileupload"},
+                    files={"fileToUpload": (os.path.basename(file_path), file_handle, "video/mp4")},
+                    headers=headers,
+                    timeout=(30, 600),
                 )
 
             if response.status_code == 200:
                 public_url = response.text.strip()
-                if public_url.startswith("https://litter.catbox.moe/"):
+                if public_url.startswith("https://files.catbox.moe/"):
                     print(f"[+] Public Video URL: {public_url}")
-                    print("[+] Temporary video link created (24-hour availability).")
+                    print("[+] Permanent Catbox video link created.")
                     return public_url
                 raise RuntimeError(
-                    f"Litterbox returned an invalid upload response: {public_url[:500]}"
+                    f"Catbox returned an invalid upload response: {public_url[:500]}"
                 )
 
             body = response.text.strip().replace("\\n", " ")[:500]
             raise RuntimeError(
-                f"Litterbox HTTP {response.status_code}: {body or response.reason}"
+                f"Catbox HTTP {response.status_code}: {body or response.reason}"
             )
 
         except (requests.RequestException, OSError, RuntimeError) as exc:
