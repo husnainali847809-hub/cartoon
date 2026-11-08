@@ -1,5 +1,7 @@
 import os
 import random
+import tempfile
+import atexit
 import requests
 import yt_dlp
 from moviepy import VideoFileClip
@@ -7,6 +9,21 @@ from moviepy import VideoFileClip
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
 BUFFER_PROFILE_ID = os.getenv("BUFFER_PROFILE_ID")
+
+# Optional Netscape-format YouTube cookies supplied through GitHub Actions Secret.
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "").strip()
+YOUTUBE_COOKIE_FILE = None
+if YOUTUBE_COOKIES:
+    cookie_handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".txt", prefix="yt-cookies-", delete=False
+    )
+    cookie_handle.write(YOUTUBE_COOKIES)
+    cookie_handle.close()
+    YOUTUBE_COOKIE_FILE = cookie_handle.name
+    atexit.register(lambda: os.path.exists(YOUTUBE_COOKIE_FILE) and os.remove(YOUTUBE_COOKIE_FILE))
+    print("[+] YouTube cookies loaded from GitHub Secret (contents hidden).")
+else:
+    print("[!] YOUTUBE_COOKIES secret not set; YouTube may reject automated downloads.")
 
 # Viral aur famous cartoons ke automatic search keywords
 CARTOON_KEYWORDS = [
@@ -28,6 +45,7 @@ def get_viral_cartoon_url():
     
     ydl_opts = {
         'js_runtimes': {'node': {}},
+        **({'cookiefile': YOUTUBE_COOKIE_FILE} if YOUTUBE_COOKIE_FILE else {}),
         'default_search': 'ytsearch',
         'extract_flat': True,
         'playlistend': 5,
