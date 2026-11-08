@@ -164,25 +164,25 @@ def convert_to_vertical_short(input_path, output_path, duration=120):
 
 
 def upload_to_temp_host(file_path):
-    """Upload the finished video to Catbox and return its public URL for Buffer."""
+    """Upload the finished video to Litterbox and return its public URL for Buffer."""
     import time
 
-    print("[*] Uploading video to public cloud storage for Buffer...")
-    upload_url = "https://catbox.moe/user/api.php"
+    print("[*] Uploading video to temporary public storage for Buffer...")
+    upload_url = "https://litterbox.catbox.moe/resources/internals/api.php"
     last_error = None
     headers = {
-        # Catbox may reject generic or missing User-Agent values (HTTP 412).
         "User-Agent": "BizPakistan-CartoonAutomation/1.0 (+https://github.com/husnainali847809-hub/cartoon)",
         "Accept": "text/plain",
     }
 
-    # Retry transient network/server failures before stopping the workflow.
+    # Litterbox supports temporary direct-download links for up to 72 hours.
+    # Buffer receives the URL immediately after upload; retry transient failures.
     for attempt in range(1, 4):
         try:
             with open(file_path, "rb") as file_handle:
                 response = requests.post(
                     upload_url,
-                    data={"reqtype": "fileupload"},
+                    data={"reqtype": "fileupload", "time": "72h"},
                     files={
                         "fileToUpload": (
                             os.path.basename(file_path),
@@ -191,22 +191,23 @@ def upload_to_temp_host(file_path):
                         )
                     },
                     headers=headers,
-                    timeout=(30, 240),
+                    timeout=(30, 300),
                 )
 
             if response.status_code != 200:
                 body = response.text.strip().replace("\\n", " ")[:500]
                 raise RuntimeError(
-                    f"Catbox HTTP {response.status_code}: {body or response.reason}"
+                    f"Litterbox HTTP {response.status_code}: {body or response.reason}"
                 )
 
             public_url = response.text.strip()
-            if public_url.startswith("https://files.catbox.moe/"):
+            if public_url.startswith("https://litter.catbox.moe/"):
                 print(f"[+] Public Video URL: {public_url}")
+                print("[+] Temporary video link created (72-hour availability).")
                 return public_url
 
             raise RuntimeError(
-                f"Catbox returned an invalid upload response: {public_url[:500]}"
+                f"Litterbox returned an invalid upload response: {public_url[:500]}"
             )
 
         except (requests.RequestException, OSError, RuntimeError) as exc:
@@ -216,7 +217,6 @@ def upload_to_temp_host(file_path):
                 time.sleep(10 * attempt)
 
     raise RuntimeError(f"Public video upload failed after 3 attempts: {last_error}")
-
 
 def send_to_buffer(video_url, caption):
     print("[*] Sending post to Buffer Queue...")
