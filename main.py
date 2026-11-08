@@ -182,13 +182,32 @@ def get_viral_cartoon_url():
             if isinstance(creator, list):
                 creator = ", ".join(str(x) for x in creator[:2])
             source_page = f"https://archive.org/details/{quote(identifier)}"
-            rights_info = metadata.get("licenseurl") or metadata.get("rights") or ""
+            # Only use license details actually supplied by Internet Archive metadata.
+            # If the item has no license/rights information, or its stated terms are
+            # not explicitly accepted by is_reusable_license(), skip it completely.
+            license_fields = [
+                metadata.get("licenseurl"),
+                metadata.get("rights"),
+                metadata.get("license"),
+                metadata.get("license_name"),
+            ]
+            license_values = []
+            for value in license_fields:
+                if isinstance(value, list):
+                    license_values.extend(str(part).strip() for part in value if str(part).strip())
+                elif value is not None and str(value).strip():
+                    license_values.append(str(value).strip())
+            rights_info = " | ".join(dict.fromkeys(license_values))
+
+            if not rights_info:
+                print(f"[!] Skipping {identifier}: license information is missing.")
+                continue
             if not is_reusable_license(rights_info):
-                print(f"[!] Skipping {identifier}: no explicitly accepted reuse license ({rights_info or 'missing'})")
+                print(f"[!] Skipping {identifier}: license information is present but not explicitly accepted ({rights_info}).")
                 continue
 
             print(f"[+] Video found: {title}")
-            print(f"[+] Rights metadata: {rights_info}")
+            print(f"[+] Verified license metadata: {rights_info}")
             print(f"[+] Source: {source_page}")
             return video_url, title, source_page, str(creator), str(rights_info)
 
