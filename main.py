@@ -170,6 +170,7 @@ def get_viral_cartoon_url():
             # Accept the video regardless of whether Archive.org provides license metadata.
             print(f"[+] Video found: {title}")
             print(f"[+] Source: {source_page}")
+            rights_info = metadata.get("rights") or metadata.get("license") or metadata.get("licenseurl") or "Not specified by Internet Archive"
             return video_url, title, source_page, str(creator), str(rights_info)
 
         except (requests.RequestException, ValueError, TypeError) as exc:
