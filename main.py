@@ -55,7 +55,7 @@ def get_viral_cartoon_url():
             top_entry = result['entries'][0]
             video_id = top_entry.get('id')
             # FIXED: Backup ke liye bhi sahi format lagaya
-            video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
+            video_url = top_entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
             print(f"[+] Backup Top Video Selected: {top_entry.get('title')}")
             print(f"[+] Direct URL: {video_url}")
             return video_url, top_entry.get('title')
