@@ -170,9 +170,13 @@ def upload_to_temp_host(file_path):
     print("[*] Uploading video to public cloud storage for Buffer...")
     upload_url = "https://catbox.moe/user/api.php"
     last_error = None
+    headers = {
+        # Catbox may reject generic or missing User-Agent values (HTTP 412).
+        "User-Agent": "BizPakistan-CartoonAutomation/1.0 (+https://github.com/husnainali847809-hub/cartoon)",
+        "Accept": "text/plain",
+    }
 
-    # Catbox accepts anonymous multipart uploads and returns a direct public URL.
-    # Retry transient DNS/network/server failures before stopping the workflow.
+    # Retry transient network/server failures before stopping the workflow.
     for attempt in range(1, 4):
         try:
             with open(file_path, "rb") as file_handle:
@@ -186,18 +190,23 @@ def upload_to_temp_host(file_path):
                             "video/mp4",
                         )
                     },
+                    headers=headers,
                     timeout=(30, 240),
                 )
 
-            response.raise_for_status()
-            public_url = response.text.strip()
+            if response.status_code != 200:
+                body = response.text.strip().replace("\\n", " ")[:500]
+                raise RuntimeError(
+                    f"Catbox HTTP {response.status_code}: {body or response.reason}"
+                )
 
-            if response.status_code == 200 and public_url.startswith("https://"):
+            public_url = response.text.strip()
+            if public_url.startswith("https://files.catbox.moe/"):
                 print(f"[+] Public Video URL: {public_url}")
                 return public_url
 
             raise RuntimeError(
-                f"Catbox returned an invalid upload response: {public_url[:300]}"
+                f"Catbox returned an invalid upload response: {public_url[:500]}"
             )
 
         except (requests.RequestException, OSError, RuntimeError) as exc:
