@@ -205,60 +205,55 @@ def download_video(url, output_path):
 
 
 def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
-    """Render one contiguous episode segment as a 1080x1920 MP4."""
-    # Landscape canvas keeps long episode parts as regular Facebook video posts.
-    # Buffer treats 9:16 Facebook uploads as Reels, which have a 90-second cap.
+    """Render one landscape Facebook video segment directly with FFmpeg.
+
+    FFmpeg performs scaling, padding, text overlay and H.264 encoding in native
+    code. This avoids MoviePy's per-frame Python compositing bottleneck that
+    made long renders take tens of minutes.
+    """
+    import subprocess
+    import imageio_ffmpeg
+
     output_w, output_h = 1920, 1080
     source = VideoFileClip(input_path)
-    clip = fitted_clip = background = overlay_clip = composed = None
     try:
         source_duration = float(source.duration or 0)
         start_time = max(0.0, float(start_time))
-        end_time = min(source_duration, start_time + max(0.1, float(duration)))
-        if end_time <= start_time:
+        actual_duration = min(max(0.1, float(duration)), source_duration - start_time)
+        if actual_duration <= 0:
             raise RuntimeError(f"Part {part_number} has an invalid time range.")
-        clip = source.subclipped(start_time, end_time)
-        original_w, original_h = clip.size
-        if original_w < 2 or original_h < 2:
-            raise RuntimeError("Source video dimensions are invalid.")
 
-        # Preserve the whole original frame without cropping.
-        scale = min(1700 / original_w, 800 / original_h)
-        fitted_w, fitted_h = max(2, int(original_w * scale)), max(2, int(original_h * scale))
-        fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
-        actual_duration = float(clip.duration)
-        background = ColorClip(size=(output_w, output_h), color=(0, 0, 0), duration=actual_duration)
-
-        overlay = Image.new("RGBA", (output_w, output_h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        label = f"PART {part_number} / {total_parts}"
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 76)
-        except OSError:
-            font = ImageFont.load_default()
-        bbox = draw.textbbox((0, 0), label, font=font, stroke_width=2)
-        text_w = bbox[2] - bbox[0]
-        draw.text(((output_w - text_w) / 2, 20), label, font=font,
-                  fill=(255, 255, 255, 255), stroke_width=3,
-                  stroke_fill=(0, 0, 0, 255))
-        overlay_clip = ImageClip(np.array(overlay), transparent=True).with_duration(actual_duration)
-        composed = CompositeVideoClip(
-            [background, fitted_clip.with_position(("center", "center")),
-             overlay_clip.with_position((0, 0))],
-            size=(output_w, output_h),
-        )
-
-        # Target 220 MiB to leave headroom below beacon.host's 250 MiB cap.
         target_bytes = 220 * 1024 * 1024
         audio_kbps = 64
         safe_total_kbps = int((target_bytes * 8 / actual_duration) / 1000)
         video_kbps = max(250, min(2200, safe_total_kbps - audio_kbps))
-        composed.write_videofile(
-            output_path, codec="libx264", audio_codec="aac", fps=30,
-            preset="veryfast", bitrate=f"{video_kbps}k",
-            audio_bitrate=f"{audio_kbps}k", threads=2,
-            ffmpeg_params=["-movflags", "+faststart"],
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        label = f"PART {part_number} / {total_parts}"
+        video_filter = (
+            "scale=1700:800:force_original_aspect_ratio=decrease,"
+            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"drawtext=fontfile={font_path}:text='{label}':"
+            "fontsize=76:fontcolor=white:borderw=3:bordercolor=black:"
+            "x=(w-text_w)/2:y=20"
         )
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "warning", "-stats",
+            "-ss", f"{start_time:.3f}", "-i", input_path,
+            "-t", f"{actual_duration:.3f}",
+            "-map", "0:v:0", "-map", "0:a?",
+            "-vf", video_filter, "-r", "30", "-fps_mode", "cfr",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
+            "-bufsize", f"{video_kbps * 2}k",
+            "-pix_fmt", "yuv420p", "-threads", "2",
+            "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+            "-movflags", "+faststart", output_path,
+        ]
+        print(f"[*] Fast FFmpeg render: part {part_number}/{total_parts}, "
+              f"{actual_duration:.1f}s at 1920x1080...")
+        subprocess.run(command, check=True)
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
             raise RuntimeError(f"Part {part_number} output is missing or too small.")
@@ -266,7 +261,6 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         if output_size >= 250 * 1024 * 1024:
             raise RuntimeError(f"Part {part_number} exceeds the 250 MiB temporary-host limit.")
 
-        # Re-open the encoded MP4 to confirm it is decodable and has the expected canvas.
         check = VideoFileClip(output_path)
         try:
             if not check.duration or check.duration <= 0:
@@ -276,16 +270,11 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         finally:
             check.close()
 
-        print(f"[+] Part {part_number}/{total_parts} verified: {actual_duration:.1f}s, {output_size / (1024 * 1024):.1f} MiB")
+        print(f"[+] Part {part_number}/{total_parts} verified: "
+              f"{actual_duration:.1f}s, {output_size / (1024 * 1024):.1f} MiB")
         return actual_duration
     finally:
-        for item in (composed, overlay_clip, background, fitted_clip, clip, source):
-            if item is not None:
-                try:
-                    item.close()
-                except Exception:
-                    pass
-
+        source.close()
 
 def split_episode_into_five(video_duration, parts=5):
     """Return five adjacent ranges covering the full episode without gaps or overlaps."""
