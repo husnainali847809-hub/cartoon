@@ -238,7 +238,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), label, font=font, stroke_width=2)
         text_w = bbox[2] - bbox[0]
-        draw.text(((output_w - text_w) / 2, 95), label, font=font,
+        draw.text(((output_w - text_w) / 2, 20), label, font=font,
                   fill=(255, 255, 255, 255), stroke_width=3,
                   stroke_fill=(0, 0, 0, 255))
         overlay_clip = ImageClip(np.array(overlay), transparent=True).with_duration(actual_duration)
