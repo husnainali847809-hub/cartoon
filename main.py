@@ -3,7 +3,9 @@ import json
 import random
 import requests
 from urllib.parse import quote
-from moviepy import VideoFileClip, ColorClip, CompositeVideoClip
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from moviepy import VideoFileClip, ColorClip, CompositeVideoClip, ImageClip
 
 # ==================== CONFIGURATION ====================
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")  # legacy fallback only
@@ -15,6 +17,10 @@ ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
 
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
+STATE_FILE = "processed_cartoon_sources.json"
+PARTS_PER_SOURCE = int(os.getenv("PARTS_PER_SOURCE", "5"))
+SHORT_SECONDS = int(os.getenv("SHORT_SECONDS", "60"))
+MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
 SEARCH_TERMS = [
     'mediatype:movies AND (subject:"cartoons" OR subject:"animation" OR title:cartoon)',
@@ -99,9 +105,10 @@ def get_wikimedia_cartoon_url():
     return None
 
 
-def get_viral_cartoon_url():
-    """Find a downloadable cartoon video on Internet Archive."""
-    print("[*] Searching Internet Archive for cartoon videos...")
+def get_viral_cartoon_url(seen_sources=None):
+    """Find a new cartoon video on Internet Archive, avoiding completed sources."""
+    seen_sources = set(seen_sources or [])
+    print("[*] Searching Internet Archive for a NEW cartoon video...")
     candidates = []
 
     for search_term in SEARCH_TERMS:
@@ -128,13 +135,15 @@ def get_viral_cartoon_url():
 
     for item in candidate_list:
         identifier = item["identifier"]
+        if identifier in seen_sources:
+            continue
         try:
             response = requests.get(ARCHIVE_METADATA_URL.format(quote(identifier)), timeout=30)
             response.raise_for_status()
             data = response.json()
             metadata = data.get("metadata", {})
             runtime = parse_runtime(metadata.get("runtime"))
-            if runtime is not None and not 60 <= runtime <= 900:
+            if runtime is not None and not 60 <= runtime <= MAX_SOURCE_SECONDS:
                 continue
 
             files = data.get("files", [])
@@ -193,78 +202,97 @@ def download_video(url, output_path):
     print("[+] Download complete!")
 
 
-def convert_to_vertical_short(input_path, output_path, duration=120):
+def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
     """
-    Create a full 9:16 Reel canvas at 1080x1920.
-    Keep the original cartoon fully visible, centered, and smaller than the
-    canvas; use black space around it instead of cropping important content.
+    Render one short segment on a 1080x1920 canvas. The original cartoon
+    remains fully visible; the unused black area carries a clear PART label.
     """
     output_w, output_h = 1080, 1920
-
-    # Randomly use one of two centered cartoon sizes on the same 9:16 Reel canvas.
-    # The source aspect ratio is preserved in both modes.
-    size_modes = [
-        ("large", 900, 1600),
-        ("compact", 720, 1280),
-    ]
-    selected_mode, max_video_w, max_video_h = random.choice(size_modes)
-
-    print(
-        f"[*] Processing video: 9:16 canvas {output_w}x{output_h}; "
-        f"random {selected_mode} cartoon size, fitted inside "
-        f"{max_video_w}x{max_video_h}..."
-    )
     source = VideoFileClip(input_path)
-    start_time = 10 if source.duration > duration + 10 else 0
-    end_time = min(source.duration, start_time + duration)
-    clip = source.subclipped(start_time, end_time)
+    try:
+        clip_duration = min(float(duration), float(source.duration))
+        start_time = max(0.0, min(float(start_time), max(0.0, source.duration - clip_duration)))
+        end_time = min(source.duration, start_time + clip_duration)
+        clip = source.subclipped(start_time, end_time)
+        original_w, original_h = clip.size
+        if original_w < 2 or original_h < 2:
+            clip.close()
+            raise RuntimeError("Source video dimensions are invalid.")
 
-    original_w, original_h = clip.size
-    if original_w < 2 or original_h < 2:
-        source.close()
+        # Keep the cartoon aspect ratio and fit it inside the 9:16 canvas.
+        max_video_w, max_video_h = 900, 1500
+        scale = min(max_video_w / original_w, max_video_h / original_h)
+        fitted_w = max(2, int(original_w * scale))
+        fitted_h = max(2, int(original_h * scale))
+        fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
+        background = ColorClip(size=(output_w, output_h), color=(0, 0, 0), duration=float(clip.duration))
+        
+        # Transparent title overlay placed in the black space above the cartoon.
+        overlay = Image.new("RGBA", (output_w, output_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        label = f"PART {part_number} / {total_parts}"
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 76)
+        except OSError:
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), label, font=font, stroke_width=2)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        draw.text(((output_w - text_w) / 2, 95), label, font=font,
+                  fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
+        overlay_clip = ImageClip(np.array(overlay)).with_duration(float(clip.duration))
+        
+        composed = CompositeVideoClip(
+            [
+                background,
+                fitted_clip.with_position(("center", "center")),
+                overlay_clip.with_position((0, 0)),
+            ],
+            size=(output_w, output_h),
+        )
+        composed.write_videofile(
+            output_path, codec="libx264", audio_codec="aac", fps=30,
+            preset="veryfast", bitrate="2500k", audio_bitrate="128k", threads=2,
+        )
+        processed_duration = float(composed.duration)
+        composed.close()
+        overlay_clip.close()
+        background.close()
+        fitted_clip.close()
         clip.close()
-        raise RuntimeError("Source video dimensions are invalid.")
+        print(f"[+] Part {part_number}/{total_parts} rendered: {processed_duration:.1f}s")
+        return processed_duration
+    finally:
+        source.close()
 
-    scale = min(max_video_w / original_w, max_video_h / original_h)
-    fitted_w = max(2, int(original_w * scale))
-    fitted_h = max(2, int(original_h * scale))
-    fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
 
-    background = ColorClip(
-        size=(output_w, output_h),
-        color=(0, 0, 0),
-        duration=float(clip.duration),
-    )
-    composed = CompositeVideoClip(
-        [
-            background,
-            fitted_clip.with_position(("center", "center")),
-        ],
-        size=(output_w, output_h),
-    )
+def choose_part_starts(video_duration, parts=5, clip_seconds=60):
+    """Spread short windows across the full episode/movie, not just its opening."""
+    video_duration = float(video_duration)
+    if video_duration < clip_seconds:
+        raise RuntimeError(f"Source is shorter than {clip_seconds} seconds.")
+    if video_duration <= parts * clip_seconds:
+        available = max(0.0, video_duration - clip_seconds)
+        return [round(available * i / max(1, parts - 1), 2) for i in range(parts)]
+    # Use five well-spaced story windows through the full runtime.
+    fractions = [0.08, 0.27, 0.46, 0.65, 0.84]
+    return [round(min(video_duration - clip_seconds, video_duration * f), 2) for f in fractions]
 
-    composed.write_videofile(
-        output_path,
-        codec="libx264",
-        audio_codec="aac",
-        fps=30,
-        preset="medium",
-        bitrate="4500k",
-        audio_bitrate="128k",
-    )
 
-    processed_duration = float(composed.duration)
-    composed.close()
-    background.close()
-    fitted_clip.close()
-    clip.close()
-    source.close()
-    print(
-        f"[+] Video processing complete: {output_w}x{output_h} (9:16), "
-        f"cartoon fitted at {fitted_w}x{fitted_h}, "
-        f"duration {processed_duration:.2f}s"
-    )
-    return processed_duration
+def load_processed_sources():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return set(data.get("sources", []))
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def save_processed_source(source_page):
+    sources = load_processed_sources()
+    sources.add(source_page)
+    with open(STATE_FILE, "w", encoding="utf-8") as handle:
+        json.dump({"sources": sorted(sources)[-500:]}, handle, indent=2)
 
 
 def upload_to_temp_host(file_path):
@@ -546,39 +574,56 @@ if __name__ == "__main__":
         if not (os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN):
             raise RuntimeError("Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API.")
 
-        target_video_url, video_title, source_page, creator = get_viral_cartoon_url()
+        seen_sources = load_processed_sources()
+        target_video_url, video_title, source_page, creator = get_viral_cartoon_url(seen_sources)
         download_video(target_video_url, DOWNLOAD_OUTPUT)
-        processed_duration = convert_to_vertical_short(
-            DOWNLOAD_OUTPUT, SHORTS_OUTPUT, duration=120
-        )
-        public_video_url = upload_to_temp_host(SHORTS_OUTPUT)
 
-        video_caption = (
-            f"✨ {video_title} ✨\n"
-            f"Source: {source_page}\n"
-            f"Creator: {creator}\n"
-            "#Cartoons #Animation #Reels #FunnyCartoons #CartoonShorts"
-        )
-        if processed_duration <= 60:
-            print(
-                f"[*] Short video detected ({processed_duration:.1f}s). "
-                "Queueing both Facebook Story and Facebook Post."
-            )
-            # Queue separately so Buffer assigns each item its own next queue slot.
-            send_to_buffer(public_video_url, video_caption, video_title, "story")
-            send_to_buffer(public_video_url, video_caption, video_title, "post")
-        else:
-            print(
-                f"[*] Video is longer than 60 seconds ({processed_duration:.1f}s). "
-                "Queueing Facebook Video Post only."
-            )
-            send_to_buffer(public_video_url, video_caption, video_title, "post")
+        source = VideoFileClip(DOWNLOAD_OUTPUT)
+        try:
+            full_duration = float(source.duration)
+        finally:
+            source.close()
 
-        for path in (DOWNLOAD_OUTPUT, SHORTS_OUTPUT):
+        if full_duration > MAX_SOURCE_SECONDS:
+            raise RuntimeError(
+                f"Source is too long ({full_duration / 3600:.1f} hours). "
+                f"Configured maximum is {MAX_SOURCE_SECONDS / 3600:.1f} hours; skipping to protect runner capacity."
+            )
+
+        starts = choose_part_starts(full_duration, PARTS_PER_SOURCE, SHORT_SECONDS)
+        print(f"[*] Selected {len(starts)} short segments from '{video_title}' ({full_duration / 60:.1f} minutes).")
+
+        # Render and upload all parts before queueing any of them.
+        uploaded_parts = []
+        for index, start_time in enumerate(starts, start=1):
+            output_path = f"cartoon_part_{index}.mp4"
+            convert_to_vertical_short(
+                DOWNLOAD_OUTPUT, output_path, start_time=start_time,
+                duration=SHORT_SECONDS, part_number=index, total_parts=len(starts)
+            )
+            if os.path.getsize(output_path) > 250 * 1024 * 1024:
+                raise RuntimeError(f"Part {index} exceeds the temporary host's 250 MB limit; stopping safely.")
+            public_url = upload_to_temp_host(output_path)
+            uploaded_parts.append((index, public_url, output_path))
+
+        # Buffer automatic queue assigns each part to the next available scheduled slot.
+        for index, public_url, output_path in uploaded_parts:
+            caption = (
+                f"🎬 {video_title}\n"
+                f"📌 PART {index}/{len(uploaded_parts)}\n"
+                f"Watch the complete cartoon story in all 5 parts.\n"
+                f"Source: {source_page}\n"
+                f"Creator: {creator}\n"
+                "#Cartoons #Animation #CartoonShorts #Part"
+            )
+            send_to_buffer(public_url, caption, f"{video_title} - Part {index}", "reel")
+            print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer queue.")
+
+        save_processed_source(source_page)
+        for path in [DOWNLOAD_OUTPUT] + [item[2] for item in uploaded_parts]:
             if os.path.exists(path):
                 os.remove(path)
-        print("[+] Automation task finished successfully.")
-
+        print(f"[SUCCESS] Completed one new cartoon as {len(uploaded_parts)} scheduled parts.")
     except Exception as exc:
         print(f"[-] Automation failed: {exc}")
         raise
