@@ -227,7 +227,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         if actual_duration <= 0:
             raise RuntimeError(f"Part {part_number} has an invalid time range.")
 
-        target_bytes = 220 * 1024 * 1024
+        target_bytes = 220_000_000  # Keep a 30 MB safety margin below Beacon's 250 MB cap
         audio_kbps = 64
         safe_total_kbps = int((target_bytes * 8 / actual_duration) / 1000)
         video_kbps = max(250, min(2200, safe_total_kbps - audio_kbps))
@@ -262,7 +262,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
             raise RuntimeError(f"Part {part_number} output is missing or too small.")
         output_size = os.path.getsize(output_path)
-        if output_size >= 250 * 1024 * 1024:
+        if output_size >= 250_000_000:
             raise RuntimeError(f"Part {part_number} exceeds the 250 MiB temporary-host limit.")
         if actual_duration + 0.5 < MIN_PART_SECONDS:
             raise RuntimeError(
@@ -331,7 +331,7 @@ def upload_to_temp_host(file_path):
 
     print("[*] Uploading video to beacon.host (large-file upload)...")
     file_size = os.path.getsize(file_path)
-    max_size = 250 * 1024 * 1024
+    max_size = 250_000_000
     if file_size <= 0:
         raise RuntimeError("Video file is empty; cannot upload.")
     if file_size > max_size:
