@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   build-and-run:
+    # Skip only the scheduled run on 10 November 2026 (content is already queued).
+    # Manual workflow_dispatch runs remain available.
+    if: ${{ github.event_name != 'schedule' || github.run_started_at < '2026-11-10T00:00:00Z' || github.run_started_at >= '2026-11-11T00:00:00Z' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
