@@ -203,31 +203,28 @@ def download_video(url, output_path):
 
 
 def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
-    """
-    Render one short segment on a 1080x1920 canvas. The original cartoon
-    remains fully visible; the unused black area carries a clear PART label.
-    """
+    """Render one contiguous episode segment as a 1080x1920 MP4."""
     output_w, output_h = 1080, 1920
     source = VideoFileClip(input_path)
+    clip = fitted_clip = background = overlay_clip = composed = None
     try:
-        clip_duration = min(float(duration), float(source.duration))
-        start_time = max(0.0, min(float(start_time), max(0.0, source.duration - clip_duration)))
-        end_time = min(source.duration, start_time + clip_duration)
+        source_duration = float(source.duration or 0)
+        start_time = max(0.0, float(start_time))
+        end_time = min(source_duration, start_time + max(0.1, float(duration)))
+        if end_time <= start_time:
+            raise RuntimeError(f"Part {part_number} has an invalid time range.")
         clip = source.subclipped(start_time, end_time)
         original_w, original_h = clip.size
         if original_w < 2 or original_h < 2:
-            clip.close()
             raise RuntimeError("Source video dimensions are invalid.")
 
-        # Keep the cartoon aspect ratio and fit it inside the 9:16 canvas.
-        max_video_w, max_video_h = 900, 1500
-        scale = min(max_video_w / original_w, max_video_h / original_h)
-        fitted_w = max(2, int(original_w * scale))
-        fitted_h = max(2, int(original_h * scale))
+        # Preserve the whole original frame without cropping.
+        scale = min(900 / original_w, 1500 / original_h)
+        fitted_w, fitted_h = max(2, int(original_w * scale)), max(2, int(original_h * scale))
         fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
-        background = ColorClip(size=(output_w, output_h), color=(0, 0, 0), duration=float(clip.duration))
-        
-        # Transparent title overlay placed in the black space above the cartoon.
+        actual_duration = float(clip.duration)
+        background = ColorClip(size=(output_w, output_h), color=(0, 0, 0), duration=actual_duration)
+
         overlay = Image.new("RGBA", (output_w, output_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         label = f"PART {part_number} / {total_parts}"
@@ -237,46 +234,65 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), label, font=font, stroke_width=2)
         text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
         draw.text(((output_w - text_w) / 2, 95), label, font=font,
-                  fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
-        overlay_clip = ImageClip(np.array(overlay)).with_duration(float(clip.duration))
-        
+                  fill=(255, 255, 255, 255), stroke_width=3,
+                  stroke_fill=(0, 0, 0, 255))
+        overlay_clip = ImageClip(np.array(overlay), transparent=True).with_duration(actual_duration)
         composed = CompositeVideoClip(
-            [
-                background,
-                fitted_clip.with_position(("center", "center")),
-                overlay_clip.with_position((0, 0)),
-            ],
+            [background, fitted_clip.with_position(("center", "center")),
+             overlay_clip.with_position((0, 0))],
             size=(output_w, output_h),
         )
+
+        # Target 220 MiB to leave headroom below beacon.host's 250 MiB cap.
+        target_bytes = 220 * 1024 * 1024
+        audio_kbps = 64
+        safe_total_kbps = int((target_bytes * 8 / actual_duration) / 1000)
+        video_kbps = max(250, min(2200, safe_total_kbps - audio_kbps))
         composed.write_videofile(
             output_path, codec="libx264", audio_codec="aac", fps=30,
-            preset="veryfast", bitrate="2500k", audio_bitrate="128k", threads=2,
+            preset="veryfast", bitrate=f"{video_kbps}k",
+            audio_bitrate=f"{audio_kbps}k", threads=2,
+            ffmpeg_params=["-movflags", "+faststart"],
         )
-        processed_duration = float(composed.duration)
-        composed.close()
-        overlay_clip.close()
-        background.close()
-        fitted_clip.close()
-        clip.close()
-        print(f"[+] Part {part_number}/{total_parts} rendered: {processed_duration:.1f}s")
-        return processed_duration
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
+            raise RuntimeError(f"Part {part_number} output is missing or too small.")
+        output_size = os.path.getsize(output_path)
+        if output_size >= 250 * 1024 * 1024:
+            raise RuntimeError(f"Part {part_number} exceeds the 250 MiB temporary-host limit.")
+
+        # Re-open the encoded MP4 to confirm it is decodable and has the expected canvas.
+        check = VideoFileClip(output_path)
+        try:
+            if not check.duration or check.duration <= 0:
+                raise RuntimeError(f"Part {part_number} has no playable duration.")
+            if tuple(check.size) != (output_w, output_h):
+                raise RuntimeError(f"Part {part_number} has unexpected dimensions: {check.size}.")
+        finally:
+            check.close()
+
+        print(f"[+] Part {part_number}/{total_parts} verified: {actual_duration:.1f}s, {output_size / (1024 * 1024):.1f} MiB")
+        return actual_duration
     finally:
-        source.close()
+        for item in (composed, overlay_clip, background, fitted_clip, clip, source):
+            if item is not None:
+                try:
+                    item.close()
+                except Exception:
+                    pass
 
 
-def choose_part_starts(video_duration, parts=5, clip_seconds=60):
-    """Spread short windows across the full episode/movie, not just its opening."""
+def split_episode_into_five(video_duration, parts=5):
+    """Return five adjacent ranges covering the full episode without gaps or overlaps."""
     video_duration = float(video_duration)
-    if video_duration < clip_seconds:
-        raise RuntimeError(f"Source is shorter than {clip_seconds} seconds.")
-    if video_duration <= parts * clip_seconds:
-        available = max(0.0, video_duration - clip_seconds)
-        return [round(available * i / max(1, parts - 1), 2) for i in range(parts)]
-    # Use five well-spaced story windows through the full runtime.
-    fractions = [0.08, 0.27, 0.46, 0.65, 0.84]
-    return [round(min(video_duration - clip_seconds, video_duration * f), 2) for f in fractions]
+    if video_duration <= 0 or parts != 5:
+        raise RuntimeError("Episode duration is invalid; exactly five parts are required.")
+    boundaries = [video_duration * i / parts for i in range(parts + 1)]
+    ranges = [(boundaries[i], boundaries[i + 1]) for i in range(parts)]
+    if any(end <= start for start, end in ranges):
+        raise RuntimeError("Episode is too short to split into five playable parts.")
+    return ranges
 
 
 def load_processed_sources():
@@ -590,24 +606,27 @@ if __name__ == "__main__":
                 f"Configured maximum is {MAX_SOURCE_SECONDS / 3600:.1f} hours; skipping to protect runner capacity."
             )
 
-        starts = choose_part_starts(full_duration, PARTS_PER_SOURCE, SHORT_SECONDS)
-        print(f"[*] Selected {len(starts)} short segments from '{video_title}' ({full_duration / 60:.1f} minutes).")
+        part_ranges = split_episode_into_five(full_duration, PARTS_PER_SOURCE)
+        print(
+            f"[*] Splitting the COMPLETE episode '{video_title}' "
+            f"({full_duration / 60:.1f} minutes) into five consecutive parts."
+        )
 
-        # Render and upload all parts before queueing any of them.
+        # Render, validate and upload all five parts before adding them to Buffer.
         uploaded_parts = []
-        for index, start_time in enumerate(starts, start=1):
+        for index, (start_time, end_time) in enumerate(part_ranges, start=1):
             output_path = f"cartoon_part_{index}.mp4"
+            segment_duration = end_time - start_time
             convert_to_vertical_short(
                 DOWNLOAD_OUTPUT, output_path, start_time=start_time,
-                duration=SHORT_SECONDS, part_number=index, total_parts=len(starts)
+                duration=segment_duration, part_number=index,
+                total_parts=len(part_ranges)
             )
-            if os.path.getsize(output_path) > 250 * 1024 * 1024:
-                raise RuntimeError(f"Part {index} exceeds the temporary host's 250 MB limit; stopping safely.")
             public_url = upload_to_temp_host(output_path)
-            uploaded_parts.append((index, public_url, output_path))
+            uploaded_parts.append((index, public_url, output_path, segment_duration))
 
-        # Buffer automatic queue assigns each part to the next available scheduled slot.
-        for index, public_url, output_path in uploaded_parts:
+        # Queue as normal Facebook video posts, not Reels, so longer parts are supported.
+        for index, public_url, output_path, segment_duration in uploaded_parts:
             caption = (
                 f"🎬 {video_title}\n"
                 f"📌 PART {index}/{len(uploaded_parts)}\n"
@@ -616,7 +635,7 @@ if __name__ == "__main__":
                 f"Creator: {creator}\n"
                 "#Cartoons #Animation #CartoonShorts #Part"
             )
-            send_to_buffer(public_url, caption, f"{video_title} - Part {index}", "reel")
+            send_to_buffer(public_url, caption, f"{video_title} - Part {index}", "post")
             print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer queue.")
 
         save_processed_source(source_page)
