@@ -2,7 +2,7 @@ name: Automated Cartoon Shorts Bot
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 09:00 AM Pakistan time: prepare and queue all 5 parts
+    - cron: '0 2 * * *'  # 07:00 AM Pakistan time: prepare and queue all 5 parts
 
   workflow_dispatch:
 
