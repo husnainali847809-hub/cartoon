@@ -2,6 +2,8 @@ import os
 import json
 import random
 import requests
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import quote
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -204,7 +206,9 @@ def download_video(url, output_path):
 
 def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
     """Render one contiguous episode segment as a 1080x1920 MP4."""
-    output_w, output_h = 1080, 1920
+    # Landscape canvas keeps long episode parts as regular Facebook video posts.
+    # Buffer treats 9:16 Facebook uploads as Reels, which have a 90-second cap.
+    output_w, output_h = 1920, 1080
     source = VideoFileClip(input_path)
     clip = fitted_clip = background = overlay_clip = composed = None
     try:
@@ -219,7 +223,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             raise RuntimeError("Source video dimensions are invalid.")
 
         # Preserve the whole original frame without cropping.
-        scale = min(900 / original_w, 1500 / original_h)
+        scale = min(1700 / original_w, 800 / original_h)
         fitted_w, fitted_h = max(2, int(original_w * scale)), max(2, int(original_h * scale))
         fitted_clip = clip.resized(new_size=(fitted_w, fitted_h))
         actual_duration = float(clip.duration)
@@ -518,7 +522,7 @@ def resolve_buffer_channel(api_key):
     )
 
 
-def send_to_buffer(video_url, caption, video_title, post_type):
+def send_to_buffer(video_url, caption, video_title, post_type, due_at):
     """Queue one Facebook video with an explicit Facebook post type."""
     print(f"[*] Sending Facebook {post_type} video to Buffer Queue...")
     api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
@@ -535,6 +539,7 @@ def send_to_buffer(video_url, caption, video_title, post_type):
     safe_text = json.dumps(caption, ensure_ascii=False)
     safe_url = json.dumps(video_url)
     safe_title = json.dumps(video_title, ensure_ascii=False)
+    safe_due_at = json.dumps(due_at)
 
     query = f'''
     mutation CreateCartoonVideoPost {{
@@ -542,7 +547,8 @@ def send_to_buffer(video_url, caption, video_title, post_type):
         text: {safe_text}
         channelId: "{channel_id}"
         schedulingType: automatic
-        mode: addToQueue
+        mode: customScheduled
+        dueAt: {safe_due_at}
         metadata: {{
           facebook: {{
             type: {post_type}
@@ -625,7 +631,9 @@ if __name__ == "__main__":
             public_url = upload_to_temp_host(output_path)
             uploaded_parts.append((index, public_url, output_path, segment_duration))
 
-        # Queue as normal Facebook video posts, not Reels, so longer parts are supported.
+        # Schedule five regular landscape Facebook video posts within about 12 hours.
+        # This keeps 24-hour temporary media URLs alive until Buffer publishes them.
+        schedule_start = datetime.now(ZoneInfo("Asia/Karachi")) + timedelta(minutes=15)
         for index, public_url, output_path, segment_duration in uploaded_parts:
             caption = (
                 f"🎬 {video_title}\n"
@@ -635,8 +643,12 @@ if __name__ == "__main__":
                 f"Creator: {creator}\n"
                 "#Cartoons #Animation #CartoonShorts #Part"
             )
-            send_to_buffer(public_url, caption, f"{video_title} - Part {index}", "post")
-            print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer queue.")
+            due_local = schedule_start + timedelta(hours=3 * (index - 1))
+            due_utc = due_local.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            send_to_buffer(
+                public_url, caption, f"{video_title} - Part {index}", "post", due_utc
+            )
+            print(f"[+] Part {index}/{len(uploaded_parts)} scheduled in Buffer for {due_local.isoformat()}.")
 
         save_processed_source(source_page)
         for path in [DOWNLOAD_OUTPUT] + [item[2] for item in uploaded_parts]:
