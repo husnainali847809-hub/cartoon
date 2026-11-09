@@ -21,6 +21,7 @@ DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 STATE_FILE = "processed_cartoon_sources.json"
 PARTS_PER_SOURCE = int(os.getenv("PARTS_PER_SOURCE", "5"))
+MIN_PART_SECONDS = int(os.getenv("MIN_PART_SECONDS", "120"))  # At least 2 minutes per scheduled part
 SHORT_SECONDS = int(os.getenv("SHORT_SECONDS", "60"))
 MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
@@ -145,7 +146,10 @@ def get_viral_cartoon_url(seen_sources=None):
             data = response.json()
             metadata = data.get("metadata", {})
             runtime = parse_runtime(metadata.get("runtime"))
-            if runtime is not None and not 60 <= runtime <= MAX_SOURCE_SECONDS:
+            minimum_source_seconds = PARTS_PER_SOURCE * MIN_PART_SECONDS
+            # Require reliable runtime metadata so short clips are not selected.
+            # Five parts x two minutes means a source must be at least ten minutes.
+            if runtime is None or runtime < minimum_source_seconds or runtime > MAX_SOURCE_SECONDS:
                 continue
 
             files = data.get("files", [])
@@ -260,6 +264,11 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         output_size = os.path.getsize(output_path)
         if output_size >= 250 * 1024 * 1024:
             raise RuntimeError(f"Part {part_number} exceeds the 250 MiB temporary-host limit.")
+        if actual_duration + 0.5 < MIN_PART_SECONDS:
+            raise RuntimeError(
+                f"Part {part_number} is too short ({actual_duration:.1f}s); "
+                f"minimum is {MIN_PART_SECONDS}s."
+            )
 
         check = VideoFileClip(output_path)
         try:
@@ -279,6 +288,13 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
 def split_episode_into_five(video_duration, parts=5):
     """Return five adjacent ranges covering the full episode without gaps or overlaps."""
     video_duration = float(video_duration)
+    minimum_source_seconds = parts * MIN_PART_SECONDS
+    if video_duration < minimum_source_seconds:
+        raise RuntimeError(
+            f"Source is too short ({video_duration / 60:.1f} minutes). "
+            f"{parts} parts of at least {MIN_PART_SECONDS / 60:.0f} minutes each "
+            f"require a source of at least {minimum_source_seconds / 60:.0f} minutes."
+        )
     if video_duration <= 0 or parts != 5:
         raise RuntimeError("Episode duration is invalid; exactly five parts are required.")
     boundaries = [video_duration * i / parts for i in range(parts + 1)]
@@ -595,6 +611,15 @@ if __name__ == "__main__":
         finally:
             source.close()
 
+        minimum_source_seconds = PARTS_PER_SOURCE * MIN_PART_SECONDS
+        if full_duration < minimum_source_seconds:
+            raise RuntimeError(
+                f"Downloaded source is too short ({full_duration / 60:.1f} minutes). "
+                f"At least {minimum_source_seconds / 60:.0f} minutes are required "
+                f"for {PARTS_PER_SOURCE} parts of {MIN_PART_SECONDS / 60:.0f}+ minutes. "
+                "This source will not be posted."
+            )
+
         if full_duration > MAX_SOURCE_SECONDS:
             raise RuntimeError(
                 f"Source is too long ({full_duration / 3600:.1f} hours). "
@@ -604,7 +629,9 @@ if __name__ == "__main__":
         part_ranges = split_episode_into_five(full_duration, PARTS_PER_SOURCE)
         print(
             f"[*] Splitting the COMPLETE episode '{video_title}' "
-            f"({full_duration / 60:.1f} minutes) into five consecutive parts."
+            f"({full_duration / 60:.1f} minutes) into five consecutive parts "
+            f"(minimum {MIN_PART_SECONDS / 60:.0f} minutes each; target upload size 220 MiB, "
+            "hard limit 250 MiB per part)."
         )
 
         # Render, validate and upload all five parts before adding them to Buffer.
