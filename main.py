@@ -673,9 +673,9 @@ if __name__ == "__main__":
                 )
                 story_caption = (
                     f"🎬 NEW CARTOON EPISODE TODAY!\n"
-                    f"{video_title}\\n"
-                    "📺 PART 1 is coming today!\\n"
-                    "Follow along for the complete cartoon story.\\n"
+                    f"{video_title}\n"
+                    "📺 PART 1 is coming today!\n"
+                    "Follow along for the complete cartoon story.\n"
                     "#Cartoons #NewEpisode #Animation"
                 )
                 send_to_buffer(
