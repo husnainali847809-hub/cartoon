@@ -527,7 +527,7 @@ def resolve_buffer_channel(api_key):
     )
 
 
-def send_to_buffer(video_url, caption, video_title, post_type):
+def send_to_buffer(video_url, caption, video_title, post_type, due_at=None):
     """Add one Facebook video to the next available Buffer queue slot."""
     print(f"[*] Sending Facebook {post_type} video to Buffer Queue...")
     api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
@@ -551,7 +551,8 @@ def send_to_buffer(video_url, caption, video_title, post_type):
         text: {safe_text}
         channelId: "{channel_id}"
         schedulingType: automatic
-        mode: addToQueue
+        mode: {"customScheduled" if due_at else "addToQueue"}
+        {f'dueAt: "{due_at}"' if due_at else ""}
         metadata: {{
           facebook: {{
             type: {post_type}
@@ -647,9 +648,15 @@ if __name__ == "__main__":
             public_url = upload_to_temp_host(output_path)
             uploaded_parts.append((index, public_url, output_path, segment_duration))
 
-        # Add all five videos to Buffer's configured recurring posting schedule.
-        # Buffer assigns each post to the next available queue slot (e.g. 09:00,
-        # 12:00, 15:00, 18:00, 21:00 PKT); no per-run custom timestamps are used.
+        # Schedule Part 1 and its announcement Story together at 09:00 Pakistan time.
+        # Parts 2-5 continue using Buffer's normal next-available queue slots.
+        pakistan_tz = ZoneInfo("Asia/Karachi")
+        now_pakistan = datetime.now(pakistan_tz)
+        first_publish = now_pakistan.replace(hour=9, minute=0, second=0, microsecond=0)
+        if first_publish <= now_pakistan:
+            first_publish += timedelta(days=1)
+        first_publish_utc = first_publish.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
         for index, public_url, output_path, segment_duration in uploaded_parts:
             caption = (
                 f"🎬 {video_title}\n"
@@ -659,10 +666,28 @@ if __name__ == "__main__":
                 f"Creator: {creator}\n"
                 "#Cartoons #Animation #CartoonShorts #Part"
             )
-            send_to_buffer(
-                public_url, caption, f"{video_title} - Part {index}", "post"
-            )
-            print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer's next available queue slot.")
+            if index == 1:
+                send_to_buffer(
+                    public_url, caption, f"{video_title} - Part 1", "post",
+                    due_at=first_publish_utc
+                )
+                story_caption = (
+                    f"🎬 NEW CARTOON EPISODE TODAY!\\n"
+                    f"{video_title}\\n"
+                    "📺 PART 1 is coming today!\\n"
+                    "Follow along for the complete cartoon story.\\n"
+                    "#Cartoons #NewEpisode #Animation"
+                )
+                send_to_buffer(
+                    public_url, story_caption, f"{video_title} - Episode Announcement", "story",
+                    due_at=first_publish_utc
+                )
+                print(f"[+] Part 1 AND its Facebook Story scheduled together for {first_publish.isoformat()}.")
+            else:
+                send_to_buffer(
+                    public_url, caption, f"{video_title} - Part {index}", "post"
+                )
+                print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer's next available queue slot.")
 
         save_processed_source(source_page)
         for path in [DOWNLOAD_OUTPUT] + [item[2] for item in uploaded_parts]:
