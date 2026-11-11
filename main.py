@@ -334,6 +334,63 @@ def convert_to_facebook_story(input_path, output_path, max_duration=55):
     finally:
         source.close()
 
+
+def create_facebook_story_image(video_path, output_path, title):
+    """Create a single vertical poster image from a representative cartoon frame."""
+    source = VideoFileClip(video_path)
+    try:
+        frame_time = min(20.0, max(0.0, float(source.duration or 0) / 3))
+        frame = Image.fromarray(source.get_frame(frame_time).astype("uint8")).convert("RGB")
+    finally:
+        source.close()
+
+    # Crop the frame to a vertical 9:16 canvas.
+    target_w, target_h = 1080, 1920
+    scale = max(target_w / frame.width, target_h / frame.height)
+    frame = frame.resize((int(frame.width * scale), int(frame.height * scale)), Image.Resampling.LANCZOS)
+    left = (frame.width - target_w) // 2
+    top = (frame.height - target_h) // 2
+    poster = frame.crop((left, top, left + target_w, top + target_h)).convert("RGBA")
+
+    # Add a restrained dark gradient so the episode title remains readable.
+    overlay = Image.new("RGBA", poster.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for y in range(1050, target_h):
+        alpha = int(210 * (y - 1050) / (target_h - 1050))
+        draw.rectangle((0, y, target_w, y + 1), fill=(0, 0, 0, alpha))
+    poster = Image.alpha_composite(poster, overlay)
+    draw = ImageDraw.Draw(poster)
+
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    small_font = ImageFont.truetype(font_path, 42)
+    title_font = ImageFont.truetype(font_path, 68)
+    draw.rounded_rectangle((64, 90, 510, 170), radius=28, fill=(15, 15, 15, 185), outline=(255, 255, 255, 190), width=2)
+    draw.text((92, 108), "NEW CARTOON", font=small_font, fill="white", stroke_width=1, stroke_fill="black")
+
+    words = str(title or "Classic Cartoon").split()
+    lines, line = [], ""
+    for word in words:
+        candidate = (line + " " + word).strip()
+        if draw.textbbox((0, 0), candidate, font=title_font)[2] <= 950:
+            line = candidate
+        else:
+            if line:
+                lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    lines = lines[-4:]
+    y = 1480
+    for line in lines:
+        draw.text((64, y), line, font=title_font, fill="white", stroke_width=3, stroke_fill=(0, 0, 0, 210))
+        y += 88
+
+    poster.convert("RGB").save(output_path, "JPEG", quality=92, optimize=True)
+    if not os.path.exists(output_path) or os.path.getsize(output_path) < 50_000:
+        raise RuntimeError("Facebook Story image was not created correctly.")
+    print(f"[+] Facebook Story image created: 1080x1920, {os.path.getsize(output_path) / 1024:.0f} KB")
+    return output_path
+
 def split_episode_into_five(video_duration, parts=5):
     """Return five adjacent ranges covering the full episode without gaps or overlaps."""
     video_duration = float(video_duration)
@@ -576,9 +633,11 @@ def resolve_buffer_channel(api_key):
     )
 
 
-def send_to_buffer(video_url, caption, video_title, post_type, due_at=None):
-    """Add one Facebook video to the next available Buffer queue slot."""
-    print(f"[*] Sending Facebook {post_type} video to Buffer Queue...")
+def send_to_buffer(media_url, caption, video_title, post_type, due_at=None, media_type="video"):
+    """Add one Facebook video or image to the next available Buffer queue slot."""
+    if media_type not in ("video", "image"):
+        raise ValueError(f"Unsupported Buffer media type: {media_type}")
+    print(f"[*] Sending Facebook {post_type} {media_type} to Buffer Queue...")
     api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
     if not api_key:
         raise RuntimeError(
@@ -591,7 +650,7 @@ def send_to_buffer(video_url, caption, video_title, post_type, due_at=None):
 
     channel_id = resolve_buffer_channel(api_key)
     safe_text = json.dumps(caption, ensure_ascii=False)
-    safe_url = json.dumps(video_url)
+    safe_url = json.dumps(media_url)
     safe_title = json.dumps(video_title, ensure_ascii=False)
 
     query = f'''
@@ -609,9 +668,9 @@ def send_to_buffer(video_url, caption, video_title, post_type, due_at=None):
         }}
         assets: [
           {{
-            video: {{
+            ${media_type}: {{
               url: {safe_url}
-              metadata: {{ title: {safe_title} }}
+              ${'metadata: { title: ' + safe_title + ' }'}
             }}
           }}
         ]
@@ -697,16 +756,15 @@ if __name__ == "__main__":
             public_url = upload_to_temp_host(output_path)
             uploaded_parts.append((index, public_url, output_path, segment_duration))
 
-        # Create a separate Facebook Story asset. Feed/story formats have different limits:
-        # Stories must be vertical (9:16) and shorter than 60 seconds.
-        story_output = "facebook_story.mp4"
+        # Create a STATIC vertical poster image for Facebook Story (no Story video).
+        story_output = "facebook_story.jpg"
         story_url = None
         try:
-            convert_to_facebook_story(DOWNLOAD_OUTPUT, story_output, max_duration=55)
+            create_facebook_story_image(DOWNLOAD_OUTPUT, story_output, video_title)
             story_url = upload_to_temp_host(story_output)
         except Exception as story_error:
-            # A Story is optional; do not lose successfully rendered/queued feed videos.
-            print(f"[!] Facebook Story skipped; feed posts will continue: {story_error}")
+            # A Story image is optional; do not lose successfully rendered/queued feed videos.
+            print(f"[!] Facebook Story image skipped; feed posts will continue: {story_error}")
 
         # Schedule Part 1 and its announcement Story together at 09:00 Pakistan time.
         # Parts 2-5 continue using Buffer's normal next-available queue slots.
@@ -742,7 +800,7 @@ if __name__ == "__main__":
                     try:
                         send_to_buffer(
                             story_url, story_caption, f"{video_title} - Episode Announcement", "story",
-                            due_at=first_publish_utc
+                            due_at=first_publish_utc, media_type="image"
                         )
                         print(f"[+] Part 1 AND its Facebook Story scheduled together for {first_publish.isoformat()}.")
                     except Exception as story_error:
