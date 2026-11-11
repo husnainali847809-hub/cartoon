@@ -668,9 +668,9 @@ def send_to_buffer(media_url, caption, video_title, post_type, due_at=None, medi
         }}
         assets: [
           {{
-            ${media_type}: {{
+            {media_type}: {{
               url: {safe_url}
-              ${'metadata: { title: ' + safe_title + ' }'}
+              {f'metadata: {{ title: {safe_title} }}' if media_type == "video" else ""}
             }}
           }}
         ]
