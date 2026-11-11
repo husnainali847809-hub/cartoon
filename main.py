@@ -285,6 +285,55 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
     finally:
         source.close()
 
+
+def convert_to_facebook_story(input_path, output_path, max_duration=55):
+    """Render a Facebook Story: vertical 9:16 and safely under Facebook's 60s limit."""
+    import subprocess
+    import imageio_ffmpeg
+
+    source = VideoFileClip(input_path)
+    try:
+        source_duration = float(source.duration or 0)
+        actual_duration = min(float(max_duration), source_duration)
+        if actual_duration <= 0 or actual_duration > 59:
+            raise RuntimeError("Facebook Story duration must be positive and below 60 seconds.")
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        # Fill a 9:16 frame by center-cropping the landscape source.
+        video_filter = (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920"
+        )
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "warning",
+            "-ss", "0", "-i", input_path, "-t", f"{actual_duration:.3f}",
+            "-map", "0:v:0", "-map", "0:a?",
+            "-vf", video_filter, "-r", "30",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-b:v", "1800k", "-maxrate", "2000k", "-bufsize", "3600k",
+            "-pix_fmt", "yuv420p", "-threads", "2",
+            "-c:a", "aac", "-b:a", "96k",
+            "-movflags", "+faststart", output_path,
+        ]
+        print(f"[*] Rendering Facebook Story: {actual_duration:.1f}s, vertical 1080x1920...")
+        subprocess.run(command, check=True)
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
+            raise RuntimeError("Facebook Story render is missing or too small.")
+        check = VideoFileClip(output_path)
+        try:
+            if not check.duration or check.duration > 59.5:
+                raise RuntimeError(f"Facebook Story duration is invalid: {check.duration}.")
+            if tuple(check.size) != (1080, 1920):
+                raise RuntimeError(f"Facebook Story dimensions are invalid: {check.size}.")
+        finally:
+            check.close()
+
+        print(f"[+] Facebook Story verified: {actual_duration:.1f}s, 1080x1920.")
+        return actual_duration
+    finally:
+        source.close()
+
 def split_episode_into_five(video_duration, parts=5):
     """Return five adjacent ranges covering the full episode without gaps or overlaps."""
     video_duration = float(video_duration)
@@ -648,6 +697,17 @@ if __name__ == "__main__":
             public_url = upload_to_temp_host(output_path)
             uploaded_parts.append((index, public_url, output_path, segment_duration))
 
+        # Create a separate Facebook Story asset. Feed/story formats have different limits:
+        # Stories must be vertical (9:16) and shorter than 60 seconds.
+        story_output = "facebook_story.mp4"
+        story_url = None
+        try:
+            convert_to_facebook_story(DOWNLOAD_OUTPUT, story_output, max_duration=55)
+            story_url = upload_to_temp_host(story_output)
+        except Exception as story_error:
+            # A Story is optional; do not lose successfully rendered/queued feed videos.
+            print(f"[!] Facebook Story skipped; feed posts will continue: {story_error}")
+
         # Schedule Part 1 and its announcement Story together at 09:00 Pakistan time.
         # Parts 2-5 continue using Buffer's normal next-available queue slots.
         pakistan_tz = ZoneInfo("Asia/Karachi")
@@ -678,11 +738,18 @@ if __name__ == "__main__":
                     "Follow along for the complete cartoon story.\n"
                     "#Cartoons #NewEpisode #Animation"
                 )
-                send_to_buffer(
-                    public_url, story_caption, f"{video_title} - Episode Announcement", "story",
-                    due_at=first_publish_utc
-                )
-                print(f"[+] Part 1 AND its Facebook Story scheduled together for {first_publish.isoformat()}.")
+                if story_url:
+                    try:
+                        send_to_buffer(
+                            story_url, story_caption, f"{video_title} - Episode Announcement", "story",
+                            due_at=first_publish_utc
+                        )
+                        print(f"[+] Part 1 AND its Facebook Story scheduled together for {first_publish.isoformat()}.")
+                    except Exception as story_error:
+                        # Buffer Story validation/API issues must not fail the feed-post workflow.
+                        print(f"[!] Facebook Story could not be queued; feed posts remain scheduled: {story_error}")
+                else:
+                    print("[!] Facebook Story was not created; feed posts remain scheduled.")
             else:
                 send_to_buffer(
                     public_url, caption, f"{video_title} - Part {index}", "post"
@@ -690,7 +757,7 @@ if __name__ == "__main__":
                 print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer's next available queue slot.")
 
         save_processed_source(source_page)
-        for path in [DOWNLOAD_OUTPUT] + [item[2] for item in uploaded_parts]:
+        for path in [DOWNLOAD_OUTPUT, story_output] + [item[2] for item in uploaded_parts]:
             if os.path.exists(path):
                 os.remove(path)
         print(f"[SUCCESS] Completed one new cartoon as {len(uploaded_parts)} scheduled parts.")
