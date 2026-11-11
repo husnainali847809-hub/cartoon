@@ -209,16 +209,17 @@ def download_video(url, output_path):
 
 
 def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
-    """Render one landscape Facebook video segment directly with FFmpeg.
+    """Render a full-screen 9:16 cartoon part with a large, sharp foreground video.
 
-    FFmpeg performs scaling, padding, text overlay and H.264 encoding in native
-    code. This avoids MoviePy's per-frame Python compositing bottleneck that
-    made long renders take tens of minutes.
+    The original cartoon frame is scaled to the full available width without
+    cropping its action. A softly blurred, darkened copy fills the vertical
+    background so the viewer never sees a tiny landscape rectangle surrounded
+    by black bars on a phone.
     """
     import subprocess
     import imageio_ffmpeg
 
-    output_w, output_h = 1920, 1080
+    output_w, output_h = 1080, 1920
     source = VideoFileClip(input_path)
     try:
         source_duration = float(source.duration or 0)
@@ -227,27 +228,34 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         if actual_duration <= 0:
             raise RuntimeError(f"Part {part_number} has an invalid time range.")
 
-        target_bytes = 220_000_000  # Keep a 30 MB safety margin below Beacon's 250 MB cap
-        audio_kbps = 64
+        target_bytes = 220_000_000
+        audio_kbps = 96
         safe_total_kbps = int((target_bytes * 8 / actual_duration) / 1000)
-        video_kbps = max(250, min(2200, safe_total_kbps - audio_kbps))
+        video_kbps = max(400, min(2800, safe_total_kbps - audio_kbps))
 
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         label = f"PART {part_number} / {total_parts}"
-        video_filter = (
-            "scale=1700:800:force_original_aspect_ratio=decrease,"
-            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+
+        # Background fills the complete portrait canvas; foreground stays
+        # uncropped and is enlarged to the full 1080px width.
+        filter_graph = (
+            "[0:v]split=2[bgsrc][fgsrc];"
+            "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=28:12,eq=brightness=-0.22:saturation=0.75[bg];"
+            "[fgsrc]scale=1080:1440:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
             f"drawtext=fontfile={font_path}:text='{label}':"
-            "fontsize=76:fontcolor=white:borderw=3:bordercolor=black:"
-            "x=(w-text_w)/2:y=20"
+            "fontsize=64:fontcolor=white:borderw=3:bordercolor=black:"
+            "x=(w-text_w)/2:y=180[vout]"
         )
         command = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "warning", "-stats",
             "-ss", f"{start_time:.3f}", "-i", input_path,
             "-t", f"{actual_duration:.3f}",
-            "-map", "0:v:0", "-map", "0:a?",
-            "-vf", video_filter, "-r", "30", "-fps_mode", "cfr",
+            "-filter_complex", filter_graph,
+            "-map", "[vout]", "-map", "0:a?",
+            "-r", "30", "-fps_mode", "cfr",
             "-c:v", "libx264", "-preset", "veryfast",
             "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
             "-bufsize", f"{video_kbps * 2}k",
@@ -256,7 +264,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             "-movflags", "+faststart", output_path,
         ]
         print(f"[*] Fast FFmpeg render: part {part_number}/{total_parts}, "
-              f"{actual_duration:.1f}s at 1920x1080...")
+              f"{actual_duration:.1f}s at 1080x1920 (full-screen portrait; enlarged cartoon)...")
         subprocess.run(command, check=True)
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
@@ -286,11 +294,10 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             check.close()
 
         print(f"[+] Part {part_number}/{total_parts} verified: "
-              f"{actual_duration:.1f}s, {output_size / (1024 * 1024):.1f} MiB")
+              f"{actual_duration:.1f}s, 1080x1920, {output_size / (1024 * 1024):.1f} MiB")
         return actual_duration
     finally:
         source.close()
-
 
 def convert_to_facebook_story(input_path, output_path, max_duration=55):
     """Render a Facebook Story: vertical 9:16 and safely under Facebook's 60s limit."""
