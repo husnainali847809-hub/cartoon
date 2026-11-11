@@ -243,7 +243,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             "[0:v]split=2[bgsrc][fgsrc];"
             "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=28:12,eq=brightness=-0.22:saturation=0.75[bg];"
-            "[fgsrc]scale=1080:1440:force_original_aspect_ratio=decrease[fg];"
+            "[fgsrc]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
             f"drawtext=fontfile={font_path}:text='{label}':"
             "fontsize=64:fontcolor=white:borderw=3:bordercolor=black:"
@@ -312,16 +312,20 @@ def convert_to_facebook_story(input_path, output_path, max_duration=55):
             raise RuntimeError("Facebook Story duration must be positive and below 60 seconds.")
 
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        # Fill a 9:16 frame by center-cropping the landscape source.
+        # Keep the complete source frame visible: blurred duplicate fills
+        # the portrait background, sharp foreground is fitted without crop/stretch.
         video_filter = (
-            "scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920"
+            "[0:v]split=2[bgsrc][fgsrc];"
+            "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=28:12,eq=brightness=-0.22:saturation=0.75[bg];"
+            "[fgsrc]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[vout]"
         )
         command = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "warning",
             "-ss", "0", "-i", input_path, "-t", f"{actual_duration:.3f}",
             "-map", "0:v:0", "-map", "0:a?",
-            "-vf", video_filter, "-r", "30",
+            "-filter_complex", video_filter, "-r", "30",
             "-c:v", "libx264", "-preset", "veryfast",
             "-b:v", "1800k", "-maxrate", "2000k", "-bufsize", "3600k",
             "-pix_fmt", "yuv420p", "-threads", "2",
