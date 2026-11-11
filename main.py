@@ -274,6 +274,12 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         try:
             if not check.duration or check.duration <= 0:
                 raise RuntimeError(f"Part {part_number} has no playable duration.")
+            duration_difference = abs(float(check.duration) - actual_duration)
+            if duration_difference > (1 / 30) + 0.01:
+                raise RuntimeError(
+                    f"Part {part_number} duration mismatch: expected {actual_duration:.3f}s, "
+                    f"rendered {float(check.duration):.3f}s."
+                )
             if tuple(check.size) != (output_w, output_h):
                 raise RuntimeError(f"Part {part_number} has unexpected dimensions: {check.size}.")
         finally:
@@ -392,21 +398,42 @@ def create_facebook_story_image(video_path, output_path, title):
     return output_path
 
 def split_episode_into_five(video_duration, parts=5):
-    """Return five adjacent ranges covering the full episode without gaps or overlaps."""
+    """Return five equal, frame-aligned ranges; a tiny tail may be left unused.
+
+    All published parts are encoded at 30 FPS. Splitting on whole output-frame
+    boundaries guarantees the same frame count and therefore the same duration
+    for every part, even when the source runtime is not divisible by five.
+    """
     video_duration = float(video_duration)
+    output_fps = 30
     minimum_source_seconds = parts * MIN_PART_SECONDS
     if video_duration < minimum_source_seconds:
         raise RuntimeError(
             f"Source is too short ({video_duration / 60:.1f} minutes). "
-            f"{parts} parts of at least {MIN_PART_SECONDS / 60:.0f} minutes each "
+            f"{parts} equal parts of at least {MIN_PART_SECONDS / 60:.0f} minutes each "
             f"require a source of at least {minimum_source_seconds / 60:.0f} minutes."
         )
     if video_duration <= 0 or parts != 5:
-        raise RuntimeError("Episode duration is invalid; exactly five parts are required.")
-    boundaries = [video_duration * i / parts for i in range(parts + 1)]
-    ranges = [(boundaries[i], boundaries[i + 1]) for i in range(parts)]
-    if any(end <= start for start, end in ranges):
+        raise RuntimeError("Episode duration is invalid; exactly five equal parts are required.")
+
+    total_frames = int(video_duration * output_fps)
+    frames_per_part = total_frames // parts
+    if frames_per_part <= 0:
         raise RuntimeError("Episode is too short to split into five playable parts.")
+
+    part_duration = frames_per_part / output_fps
+    ranges = [
+        (index * part_duration, (index + 1) * part_duration)
+        for index in range(parts)
+    ]
+    if any(end <= start for start, end in ranges):
+        raise RuntimeError("Episode is too short to split into five equal playable parts.")
+
+    print(
+        f"[*] Equal split verified: {frames_per_part} frames x {parts} parts "
+        f"at {output_fps} FPS ({part_duration:.3f}s each). "
+        f"Unused tail: {video_duration - part_duration * parts:.3f}s."
+    )
     return ranges
 
 
@@ -745,7 +772,10 @@ if __name__ == "__main__":
 
         # Render, validate and upload all five parts before adding them to Buffer.
         uploaded_parts = []
+        expected_part_duration = part_ranges[0][1] - part_ranges[0][0]
         for index, (start_time, end_time) in enumerate(part_ranges, start=1):
+            if abs((end_time - start_time) - expected_part_duration) > 0.001:
+                raise RuntimeError(f"Part {index} does not match the common episode-part duration.")
             output_path = f"cartoon_part_{index}.mp4"
             segment_duration = end_time - start_time
             convert_to_vertical_short(
