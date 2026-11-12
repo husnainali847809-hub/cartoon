@@ -20,8 +20,7 @@ ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
 DOWNLOAD_OUTPUT = "downloaded_video.mp4"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 STATE_FILE = "processed_cartoon_sources.json"
-PARTS_PER_SOURCE = int(os.getenv("PARTS_PER_SOURCE", "5"))
-MIN_PART_SECONDS = int(os.getenv("MIN_PART_SECONDS", "120"))  # At least 2 minutes per scheduled part
+MAX_PART_SECONDS = int(os.getenv("MAX_PART_SECONDS", "300"))  # Never make an episode part longer than 5 minutes
 SHORT_SECONDS = int(os.getenv("SHORT_SECONDS", "60"))
 MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
@@ -146,10 +145,10 @@ def get_viral_cartoon_url(seen_sources=None):
             data = response.json()
             metadata = data.get("metadata", {})
             runtime = parse_runtime(metadata.get("runtime"))
-            minimum_source_seconds = PARTS_PER_SOURCE * MIN_PART_SECONDS
-            # Require reliable runtime metadata so short clips are not selected.
-            # Five parts x two minutes means a source must be at least ten minutes.
-            if runtime is None or runtime < minimum_source_seconds or runtime > MAX_SOURCE_SECONDS:
+            # Require a known, positive runtime and respect the overall source safety cap.
+            # The complete source will be split into as many equal parts as needed,
+            # with no individual part exceeding MAX_PART_SECONDS.
+            if runtime is None or runtime <= 0 or runtime > MAX_SOURCE_SECONDS:
                 continue
 
             files = data.get("files", [])
@@ -279,10 +278,10 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         output_size = os.path.getsize(output_path)
         if output_size >= 250_000_000:
             raise RuntimeError(f"Part {part_number} exceeds the 250 MiB temporary-host limit.")
-        if actual_duration + 0.5 < MIN_PART_SECONDS:
+        if actual_duration > MAX_PART_SECONDS + 0.5:
             raise RuntimeError(
-                f"Part {part_number} is too short ({actual_duration:.1f}s); "
-                f"minimum is {MIN_PART_SECONDS}s."
+                f"Part {part_number} exceeds the {MAX_PART_SECONDS}s maximum: "
+                f"{actual_duration:.1f}s."
             )
 
         check = VideoFileClip(output_path)
@@ -415,42 +414,40 @@ def create_facebook_story_image(video_path, output_path, title):
     print(f"[+] Facebook Story image created: 1080x1920, {os.path.getsize(output_path) / 1024:.0f} KB")
     return output_path
 
-def split_episode_into_five(video_duration, parts=5):
-    """Return five equal, frame-aligned ranges; a tiny tail may be left unused.
+def split_episode_into_equal_parts(video_duration, max_part_seconds=MAX_PART_SECONDS):
+    """Split the complete episode into near-equal, frame-aligned parts.
 
-    All published parts are encoded at 30 FPS. Splitting on whole output-frame
-    boundaries guarantees the same frame count and therefore the same duration
-    for every part, even when the source runtime is not divisible by five.
+    The number of parts is calculated automatically. Every part is at most
+    max_part_seconds, all parts differ by no more than one 30-FPS frame, and
+    the complete source timeline is covered without intentionally dropping a tail.
     """
     video_duration = float(video_duration)
     output_fps = 30
-    minimum_source_seconds = parts * MIN_PART_SECONDS
-    if video_duration < minimum_source_seconds:
-        raise RuntimeError(
-            f"Source is too short ({video_duration / 60:.1f} minutes). "
-            f"{parts} equal parts of at least {MIN_PART_SECONDS / 60:.0f} minutes each "
-            f"require a source of at least {minimum_source_seconds / 60:.0f} minutes."
-        )
-    if video_duration <= 0 or parts != 5:
-        raise RuntimeError("Episode duration is invalid; exactly five equal parts are required.")
+    if video_duration <= 0 or max_part_seconds <= 0:
+        raise RuntimeError("Episode duration or maximum part duration is invalid.")
 
-    total_frames = int(video_duration * output_fps)
-    frames_per_part = total_frames // parts
-    if frames_per_part <= 0:
-        raise RuntimeError("Episode is too short to split into five playable parts.")
+    total_frames = int(round(video_duration * output_fps))
+    max_frames_per_part = int(max_part_seconds * output_fps)
+    if total_frames <= 0 or max_frames_per_part <= 0:
+        raise RuntimeError("Episode is too short to create playable parts.")
 
-    part_duration = frames_per_part / output_fps
-    ranges = [
-        (index * part_duration, (index + 1) * part_duration)
-        for index in range(parts)
-    ]
-    if any(end <= start for start, end in ranges):
-        raise RuntimeError("Episode is too short to split into five equal playable parts.")
+    parts = (total_frames + max_frames_per_part - 1) // max_frames_per_part
+    ranges = []
+    for index in range(parts):
+        start_frame = index * total_frames // parts
+        end_frame = (index + 1) * total_frames // parts
+        if end_frame <= start_frame:
+            raise RuntimeError("Episode produced an empty part.")
+        ranges.append((start_frame / output_fps, end_frame / output_fps))
+
+    durations = [end - start for start, end in ranges]
+    if max(durations) > max_part_seconds + (1 / output_fps):
+        raise RuntimeError("Calculated part duration exceeds the configured maximum.")
 
     print(
-        f"[*] Equal split verified: {frames_per_part} frames x {parts} parts "
-        f"at {output_fps} FPS ({part_duration:.3f}s each). "
-        f"Unused tail: {video_duration - part_duration * parts:.3f}s."
+        f"[*] Equal split verified: complete episode covered in {parts} parts; "
+        f"each part {min(durations):.3f}-{max(durations):.3f}s "
+        f"(maximum {max_part_seconds}s), with no intentional tail omitted."
     )
     return ranges
 
@@ -765,30 +762,21 @@ if __name__ == "__main__":
         finally:
             source.close()
 
-        minimum_source_seconds = PARTS_PER_SOURCE * MIN_PART_SECONDS
-        if full_duration < minimum_source_seconds:
-            raise RuntimeError(
-                f"Downloaded source is too short ({full_duration / 60:.1f} minutes). "
-                f"At least {minimum_source_seconds / 60:.0f} minutes are required "
-                f"for {PARTS_PER_SOURCE} parts of {MIN_PART_SECONDS / 60:.0f}+ minutes. "
-                "This source will not be posted."
-            )
-
         if full_duration > MAX_SOURCE_SECONDS:
             raise RuntimeError(
                 f"Source is too long ({full_duration / 3600:.1f} hours). "
                 f"Configured maximum is {MAX_SOURCE_SECONDS / 3600:.1f} hours; skipping to protect runner capacity."
             )
 
-        part_ranges = split_episode_into_five(full_duration, PARTS_PER_SOURCE)
+        part_ranges = split_episode_into_equal_parts(full_duration, MAX_PART_SECONDS)
         print(
             f"[*] Splitting the COMPLETE episode '{video_title}' "
-            f"({full_duration / 60:.1f} minutes) into five consecutive parts "
-            f"(minimum {MIN_PART_SECONDS / 60:.0f} minutes each; target upload size 220 MiB, "
-            "hard limit 250 MiB per part)."
+            f"({full_duration / 60:.1f} minutes) into {len(part_ranges)} consecutive, "
+            f"near-equal parts (maximum {MAX_PART_SECONDS / 60:.0f} minutes each; "
+            "target upload size 220 MiB, hard limit 250 MiB per part)."
         )
 
-        # Render, validate and upload all five parts before adding them to Buffer.
+        # Render, validate and upload every part before adding them to Buffer.
         uploaded_parts = []
         expected_part_duration = part_ranges[0][1] - part_ranges[0][0]
         for index, (start_time, end_time) in enumerate(part_ranges, start=1):
@@ -815,7 +803,7 @@ if __name__ == "__main__":
             print(f"[!] Facebook Story image skipped; feed posts will continue: {story_error}")
 
         # Schedule Part 1 and its announcement Story together at 09:00 Pakistan time.
-        # Parts 2-5 continue using Buffer's normal next-available queue slots.
+        # Remaining parts continue using Buffer's normal next-available queue slots.
         pakistan_tz = ZoneInfo("Asia/Karachi")
         now_pakistan = datetime.now(pakistan_tz)
         first_publish = now_pakistan.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -827,7 +815,7 @@ if __name__ == "__main__":
             caption = (
                 f"🎬 {video_title}\n"
                 f"📌 PART {index}/{len(uploaded_parts)}\n"
-                f"Watch the complete cartoon story in all 5 parts.\n"
+                f"Watch the complete cartoon story in all {len(uploaded_parts)} parts.\n"
                 f"Source: {source_page}\n"
                 f"Creator: {creator}\n"
                 "#Cartoons #Animation #CartoonShorts #Part"
