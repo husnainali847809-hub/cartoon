@@ -816,8 +816,6 @@ if __name__ == "__main__":
                 f"🎬 {video_title}\n"
                 f"📌 PART {index}/{len(uploaded_parts)}\n"
                 f"Watch the complete cartoon story in all {len(uploaded_parts)} parts.\n"
-                f"Source: {source_page}\n"
-                f"Creator: {creator}\n"
                 "#Cartoons #Animation #CartoonShorts #Part"
             )
             if index == 1:
