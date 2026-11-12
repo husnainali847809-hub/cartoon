@@ -779,9 +779,18 @@ if __name__ == "__main__":
         # Render, validate and upload every part before adding them to Buffer.
         uploaded_parts = []
         expected_part_duration = part_ranges[0][1] - part_ranges[0][0]
+        # Equal splitting is frame-aligned at 30 FPS. When the total frame
+        # count is not divisible by the number of parts, durations can differ
+        # by exactly one frame (about 0.0333s). Allow that normal rounding
+        # difference instead of rejecting a valid complete-episode split.
+        part_duration_tolerance = (1 / 30) + 0.001
         for index, (start_time, end_time) in enumerate(part_ranges, start=1):
-            if abs((end_time - start_time) - expected_part_duration) > 0.001:
-                raise RuntimeError(f"Part {index} does not match the common episode-part duration.")
+            actual_part_duration = end_time - start_time
+            if abs(actual_part_duration - expected_part_duration) > part_duration_tolerance:
+                raise RuntimeError(
+                    f"Part {index} duration differs from the common episode-part duration "
+                    f"by more than one 30-FPS frame: {actual_part_duration:.3f}s."
+                )
             output_path = f"cartoon_part_{index}.mp4"
             segment_duration = end_time - start_time
             convert_to_vertical_short(
