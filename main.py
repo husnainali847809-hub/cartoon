@@ -851,31 +851,27 @@ if __name__ == "__main__":
             )
 
         queued_today = 0
-        for slot in publish_slots:
-            if queued_today >= daily_target or not pending_parts:
-                break
-
-            # Refresh the clock before each upload. If rendering has taken too
-            # long and this slot passed, use the next available slot today.
+        cached_source_url = None
+        while queued_today < daily_target and pending_parts:
+            # Recalculate slots after each render/upload so slow processing
+            # cannot accidentally reuse a slot that has already passed.
             current_time = datetime.now(pakistan_tz)
-            if slot <= current_time + timedelta(minutes=5):
-                future_slots = [
-                    candidate for candidate in get_today_publish_slots(current_time)
-                    if candidate > slot
-                ]
-                if not future_slots:
-                    print("[!] No more same-day slots remain; keeping remaining parts for tomorrow.")
-                    break
-                slot = future_slots[0]
+            remaining_slots = get_today_publish_slots(current_time)
+            if not remaining_slots:
+                print("[!] No more same-day slots remain; keeping remaining parts for tomorrow.")
+                break
+            slot = remaining_slots[0]
 
             task = pending_parts[0]
             output_path = f"cartoon_part_{task['part_number']}.mp4"
             source_url = task["video_url"]
 
-            # Reuse the episode download within this run; otherwise download it
-            # again when its remaining parts are picked up on a later day.
-            if not os.path.exists(DOWNLOAD_OUTPUT):
+            # Switch source files when the backlog moves to a different episode.
+            if cached_source_url != source_url or not os.path.exists(DOWNLOAD_OUTPUT):
+                if os.path.exists(DOWNLOAD_OUTPUT):
+                    os.remove(DOWNLOAD_OUTPUT)
                 download_video(source_url, DOWNLOAD_OUTPUT)
+                cached_source_url = source_url
 
             segment_duration = float(task["end"]) - float(task["start"])
             convert_to_vertical_short(
