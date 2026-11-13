@@ -836,15 +836,19 @@ if __name__ == "__main__":
 
         seen_sources = load_processed_sources()
         pending_parts = load_pending_parts()
+        reserved_sources = set(seen_sources) | {
+            item.get("source_page") for item in pending_parts if item.get("source_page")
+        }
         print(f"[*] Existing pending episode parts: {len(pending_parts)}")
 
         # If one short episode yields only 2-3 parts, fetch another complete
         # episode and append its parts until today's five-video target is met.
         while len(pending_parts) < daily_target:
             before_count = len(pending_parts)
-            source_page = build_episode_parts(seen_sources, pending_parts)
+            source_page = build_episode_parts(reserved_sources, pending_parts)
             if len(pending_parts) <= before_count:
                 raise RuntimeError("A new episode did not add any publishable parts.")
+            reserved_sources.add(source_page)
             print(
                 f"[+] Added {len(pending_parts) - before_count} parts from another episode. "
                 f"Backlog now contains {len(pending_parts)} parts."
