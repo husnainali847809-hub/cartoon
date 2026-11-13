@@ -39,7 +39,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add processed_cartoon_sources.json
+          git add processed_cartoon_sources.json cartoon_queue.json
           if ! git diff --cached --quiet; then
             git commit -m "Save processed cartoon history"
             git push
