@@ -747,121 +747,199 @@ def send_to_buffer(media_url, caption, video_title, post_type, due_at=None, medi
     raise RuntimeError(f"Buffer could not queue the Facebook {post_type}: {message}")
 
 
+def load_pending_parts():
+    try:
+        with open("cartoon_queue.json", "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def save_pending_parts(queue):
+    temporary_path = "cartoon_queue.json.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as handle:
+        json.dump(queue, handle, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, "cartoon_queue.json")
+
+
+def get_today_publish_slots(now):
+    """Return up to five future same-day Facebook video slots in Pakistan time."""
+    slot_hours = (9, 12, 15, 18, 21)
+    slots = []
+    for hour in slot_hours:
+        slot = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if slot > now + timedelta(minutes=5):
+            slots.append(slot)
+    return slots
+
+
+def build_episode_parts(seen_sources, pending_parts):
+    """Download a fresh episode and append every complete-episode part to backlog."""
+    target_video_url, video_title, source_page, creator = get_viral_cartoon_url(seen_sources)
+    download_video(target_video_url, DOWNLOAD_OUTPUT)
+
+    source = VideoFileClip(DOWNLOAD_OUTPUT)
+    try:
+        full_duration = float(source.duration or 0)
+    finally:
+        source.close()
+
+    if full_duration <= 0 or full_duration > MAX_SOURCE_SECONDS:
+        raise RuntimeError(
+            f"Source duration is invalid or exceeds the configured limit: {full_duration:.1f}s."
+        )
+
+    ranges = split_episode_into_equal_parts(full_duration, MAX_PART_SECONDS)
+    print(
+        f"[*] Episode '{video_title}' has {len(ranges)} complete parts. "
+        "Adding all parts to the daily publishing backlog."
+    )
+    for part_number, (start_time, end_time) in enumerate(ranges, start=1):
+        pending_parts.append({
+            "video_url": target_video_url,
+            "title": video_title,
+            "source_page": source_page,
+            "creator": creator,
+            "start": start_time,
+            "end": end_time,
+            "part_number": part_number,
+            "total_parts": len(ranges),
+        })
+
+    # Persist immediately so an interruption does not lose the episode backlog.
+    save_pending_parts(pending_parts)
+    return source_page
+
+
 if __name__ == "__main__":
     try:
         if not (os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN):
-            raise RuntimeError("Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API.")
-
-        seen_sources = load_processed_sources()
-        target_video_url, video_title, source_page, creator = get_viral_cartoon_url(seen_sources)
-        download_video(target_video_url, DOWNLOAD_OUTPUT)
-
-        source = VideoFileClip(DOWNLOAD_OUTPUT)
-        try:
-            full_duration = float(source.duration)
-        finally:
-            source.close()
-
-        if full_duration > MAX_SOURCE_SECONDS:
             raise RuntimeError(
-                f"Source is too long ({full_duration / 3600:.1f} hours). "
-                f"Configured maximum is {MAX_SOURCE_SECONDS / 3600:.1f} hours; skipping to protect runner capacity."
+                "Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API."
             )
 
-        part_ranges = split_episode_into_equal_parts(full_duration, MAX_PART_SECONDS)
-        print(
-            f"[*] Splitting the COMPLETE episode '{video_title}' "
-            f"({full_duration / 60:.1f} minutes) into {len(part_ranges)} consecutive, "
-            f"near-equal parts (maximum {MAX_PART_SECONDS / 60:.0f} minutes each; "
-            "target upload size 220 MiB, hard limit 250 MiB per part)."
-        )
-
-        # Render, validate and upload every part before adding them to Buffer.
-        uploaded_parts = []
-        expected_part_duration = part_ranges[0][1] - part_ranges[0][0]
-        # Equal splitting is frame-aligned at 30 FPS. When the total frame
-        # count is not divisible by the number of parts, durations can differ
-        # by exactly one frame (about 0.0333s). Allow that normal rounding
-        # difference instead of rejecting a valid complete-episode split.
-        part_duration_tolerance = (1 / 30) + 0.001
-        for index, (start_time, end_time) in enumerate(part_ranges, start=1):
-            actual_part_duration = end_time - start_time
-            if abs(actual_part_duration - expected_part_duration) > part_duration_tolerance:
-                raise RuntimeError(
-                    f"Part {index} duration differs from the common episode-part duration "
-                    f"by more than one 30-FPS frame: {actual_part_duration:.3f}s."
-                )
-            output_path = f"cartoon_part_{index}.mp4"
-            segment_duration = end_time - start_time
-            convert_to_vertical_short(
-                DOWNLOAD_OUTPUT, output_path, start_time=start_time,
-                duration=segment_duration, part_number=index,
-                total_parts=len(part_ranges)
-            )
-            public_url = upload_to_temp_host(output_path)
-            uploaded_parts.append((index, public_url, output_path, segment_duration))
-
-        # Create a STATIC vertical poster image for Facebook Story (no Story video).
-        story_output = "facebook_story.jpg"
-        story_url = None
-        try:
-            create_facebook_story_image(DOWNLOAD_OUTPUT, story_output, video_title)
-            story_url = upload_to_temp_host(story_output)
-        except Exception as story_error:
-            # A Story image is optional; do not lose successfully rendered/queued feed videos.
-            print(f"[!] Facebook Story image skipped; feed posts will continue: {story_error}")
-
-        # Schedule Part 1 and its announcement Story together at 09:00 Pakistan time.
-        # Remaining parts continue using Buffer's normal next-available queue slots.
         pakistan_tz = ZoneInfo("Asia/Karachi")
         now_pakistan = datetime.now(pakistan_tz)
-        first_publish = now_pakistan.replace(hour=9, minute=0, second=0, microsecond=0)
-        if first_publish <= now_pakistan:
-            first_publish += timedelta(days=1)
-        first_publish_utc = first_publish.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-        for index, public_url, output_path, segment_duration in uploaded_parts:
-            caption = (
-                f"🎬 {video_title}\n"
-                f"📌 PART {index}/{len(uploaded_parts)}\n"
-                f"Watch the complete cartoon story in all {len(uploaded_parts)} parts.\n"
-                "#Cartoons #Animation #CartoonShorts #Part"
+        publish_slots = get_today_publish_slots(now_pakistan)
+        if not publish_slots:
+            raise RuntimeError(
+                "All five daily publishing slots have passed. Pending parts are preserved "
+                "for the next daily run; no expiring temporary links were created."
             )
-            if index == 1:
-                send_to_buffer(
-                    public_url, caption, f"{video_title} - Part 1", "post",
-                    due_at=first_publish_utc
-                )
-                story_caption = (
-                    f"🎬 NEW CARTOON EPISODE TODAY!\n"
-                    f"{video_title}\n"
-                    "📺 PART 1 is coming today!\n"
-                    "Follow along for the complete cartoon story.\n"
-                    "#Cartoons #NewEpisode #Animation"
-                )
-                if story_url:
-                    try:
-                        send_to_buffer(
-                            story_url, story_caption, f"{video_title} - Episode Announcement", "story",
-                            due_at=first_publish_utc, media_type="image"
-                        )
-                        print(f"[+] Part 1 AND its Facebook Story scheduled together for {first_publish.isoformat()}.")
-                    except Exception as story_error:
-                        # Buffer Story validation/API issues must not fail the feed-post workflow.
-                        print(f"[!] Facebook Story could not be queued; feed posts remain scheduled: {story_error}")
-                else:
-                    print("[!] Facebook Story was not created; feed posts remain scheduled.")
-            else:
-                send_to_buffer(
-                    public_url, caption, f"{video_title} - Part {index}", "post"
-                )
-                print(f"[+] Part {index}/{len(uploaded_parts)} added to Buffer's next available queue slot.")
 
-        save_processed_source(source_page)
-        for path in [DOWNLOAD_OUTPUT, story_output] + [item[2] for item in uploaded_parts]:
-            if os.path.exists(path):
-                os.remove(path)
-        print(f"[SUCCESS] Completed one new cartoon as {len(uploaded_parts)} scheduled parts.")
+        daily_target = min(5, len(publish_slots))
+        print(
+            f"[*] Daily video target: 5. Available future slots today: "
+            f"{len(publish_slots)}. This run will queue up to {daily_target} videos."
+        )
+
+        seen_sources = load_processed_sources()
+        pending_parts = load_pending_parts()
+        print(f"[*] Existing pending episode parts: {len(pending_parts)}")
+
+        # If one short episode yields only 2-3 parts, fetch another complete
+        # episode and append its parts until today's five-video target is met.
+        while len(pending_parts) < daily_target:
+            before_count = len(pending_parts)
+            source_page = build_episode_parts(seen_sources, pending_parts)
+            if len(pending_parts) <= before_count:
+                raise RuntimeError("A new episode did not add any publishable parts.")
+            print(
+                f"[+] Added {len(pending_parts) - before_count} parts from another episode. "
+                f"Backlog now contains {len(pending_parts)} parts."
+            )
+
+        queued_today = 0
+        for slot in publish_slots:
+            if queued_today >= daily_target or not pending_parts:
+                break
+
+            # Refresh the clock before each upload. If rendering has taken too
+            # long and this slot passed, use the next available slot today.
+            current_time = datetime.now(pakistan_tz)
+            if slot <= current_time + timedelta(minutes=5):
+                future_slots = [
+                    candidate for candidate in get_today_publish_slots(current_time)
+                    if candidate > slot
+                ]
+                if not future_slots:
+                    print("[!] No more same-day slots remain; keeping remaining parts for tomorrow.")
+                    break
+                slot = future_slots[0]
+
+            task = pending_parts[0]
+            output_path = f"cartoon_part_{task['part_number']}.mp4"
+            source_url = task["video_url"]
+
+            # Reuse the episode download within this run; otherwise download it
+            # again when its remaining parts are picked up on a later day.
+            if not os.path.exists(DOWNLOAD_OUTPUT):
+                download_video(source_url, DOWNLOAD_OUTPUT)
+
+            segment_duration = float(task["end"]) - float(task["start"])
+            convert_to_vertical_short(
+                DOWNLOAD_OUTPUT,
+                output_path,
+                start_time=float(task["start"]),
+                duration=segment_duration,
+                part_number=int(task["part_number"]),
+                total_parts=int(task["total_parts"]),
+            )
+            public_url = upload_to_temp_host(output_path)
+
+            caption = (
+                f"🎬 {task['title']}\n"
+                f"📌 PART {task['part_number']}/{task['total_parts']}\n"
+                "Watch the complete cartoon story in all parts.\n"
+                "#Cartoons #Animation #CartoonShorts #FunnyCartoons"
+            )
+            due_at_utc = (
+                slot.astimezone(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+            send_to_buffer(
+                public_url,
+                caption,
+                f"{task['title']} - Part {task['part_number']}",
+                "post",
+                due_at=due_at_utc,
+            )
+
+            # Only remove a part after Buffer confirms that it accepted it.
+            pending_parts.pop(0)
+            save_pending_parts(pending_parts)
+            queued_today += 1
+
+            if not any(
+                item.get("source_page") == task["source_page"]
+                for item in pending_parts
+            ):
+                save_processed_source(task["source_page"])
+                seen_sources.add(task["source_page"])
+
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
+            print(
+                f"[SUCCESS] Video {queued_today}/{daily_target} queued for "
+                f"{slot.strftime('%Y-%m-%d %H:%M')} Pakistan time. "
+                f"Remaining backlog: {len(pending_parts)} parts."
+            )
+
+        if os.path.exists(DOWNLOAD_OUTPUT):
+            os.remove(DOWNLOAD_OUTPUT)
+
+        print(
+            f"[DAILY RESULT] {queued_today}/{daily_target} videos queued for today's "
+            f"available slots. {len(pending_parts)} extra parts remain saved for the next day."
+        )
+        if queued_today < 5:
+            print(
+                "[!] Five posts could not be scheduled today because fewer than five "
+                "future daily slots remained. Unpublished parts have been retained."
+            )
     except Exception as exc:
         print(f"[-] Automation failed: {exc}")
         raise
