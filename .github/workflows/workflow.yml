@@ -2,8 +2,8 @@ name: Automated Cartoon Shorts Bot
 
 on:
   schedule:
-    # Pakistan time: run shortly before each of the five daily publishing slots.
-    - cron: '50 8,11,14,17,20 * * *'
+    # Prepare one video ahead of each publishing slot (Pakistan time).
+    - cron: '5 7,10,13,16,19 * * *'
       timezone: "Asia/Karachi"
 
   workflow_dispatch:
