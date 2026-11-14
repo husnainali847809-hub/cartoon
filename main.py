@@ -828,10 +828,11 @@ if __name__ == "__main__":
                 "for the next daily run; no expiring temporary links were created."
             )
 
-        daily_target = 1
+        daily_target = min(5, len(publish_slots))
         print(
-            f"[*] One-video-per-run mode. Available future publishing slots today: "
-            f"{len(publish_slots)}. This run will queue at most one video."
+            f"[*] Daily video target: 5. Available future slots today: "
+            f"{len(publish_slots)}. This single run will queue up to {daily_target} videos "
+            "for separate Buffer publishing times."
         )
 
         seen_sources = load_processed_sources()
@@ -935,10 +936,10 @@ if __name__ == "__main__":
             f"[DAILY RESULT] {queued_today}/{daily_target} videos queued for today's "
             f"available slots. {len(pending_parts)} extra parts remain saved for the next day."
         )
-        if queued_today < daily_target:
+        if queued_today < 5:
             print(
-                "[!] This scheduled run could not queue its one video. "
-                "Unpublished parts have been retained for the next run."
+                "[!] Five posts could not be scheduled today because fewer than five "
+                "future daily slots remained. Unpublished parts have been retained."
             )
     except Exception as exc:
         print(f"[-] Automation failed: {exc}")
