@@ -2,9 +2,8 @@ name: Automated Cartoon Shorts Bot
 
 on:
   schedule:
-    # Prepare one video ahead of each publishing slot (Pakistan time).
-    - cron: '5 7,10,13,16,19 * * *'
-      timezone: "Asia/Karachi"
+    # One daily run at 07:05 Pakistan time (02:05 UTC).
+    - cron: '5 2 * * *'
 
   workflow_dispatch:
 
@@ -29,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
 
-      - name: Run script and queue one short in Buffer
+      - name: Run script and queue cartoon parts in Buffer
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
