@@ -857,13 +857,18 @@ if __name__ == "__main__":
 
         queued_today = 0
         cached_source_url = None
+        last_scheduled_slot = None
         while queued_today < daily_target and pending_parts:
-            # Recalculate slots after each render/upload so slow processing
-            # cannot accidentally reuse a slot that has already passed.
+            # Recalculate future slots after each render/upload. Exclude every
+            # slot already assigned in this run so posts cannot share a time.
             current_time = datetime.now(pakistan_tz)
-            remaining_slots = get_today_publish_slots(current_time)
+            remaining_slots = [
+                candidate
+                for candidate in get_today_publish_slots(current_time)
+                if last_scheduled_slot is None or candidate > last_scheduled_slot
+            ]
             if not remaining_slots:
-                print("[!] No more same-day slots remain; keeping remaining parts for tomorrow.")
+                print("[!] No more unassigned same-day slots remain; keeping remaining parts for tomorrow.")
                 break
             slot = remaining_slots[0]
 
@@ -907,6 +912,9 @@ if __name__ == "__main__":
                 "post",
                 due_at=due_at_utc,
             )
+
+            # Mark this slot as used only after Buffer confirms acceptance.
+            last_scheduled_slot = slot
 
             # Only remove a part after Buffer confirms that it accepted it.
             pending_parts.pop(0)
