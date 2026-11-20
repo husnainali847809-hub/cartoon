@@ -30,11 +30,12 @@ MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
 
 def get_viral_cartoon_url(seen_sources=None):
-    """Select an unseen public video from any configured TikTok source account.
+    """Choose the most popular unprocessed cartoon video across all TikTok accounts.
 
-    Each account is checked in order. An account with no unseen public videos
-    or a temporary extraction error does not prevent checking the others.
-    Only source URLs already recorded as processed/pending are skipped.
+    Upload age is deliberately NOT used as a filter: older and newer videos
+    compete together. Popularity is ranked primarily by views, then likes and
+    comments. Videos already posted (or already waiting in the pending queue)
+    are excluded to prevent duplicates.
     """
     from yt_dlp import YoutubeDL
 
@@ -45,48 +46,87 @@ def get_viral_cartoon_url(seen_sources=None):
         "extract_flat": "in_playlist",
         "skip_download": True,
     }
+    candidates = []
     account_errors = []
 
     for profile_url in TIKTOK_PROFILE_URLS:
-        print(f"[*] Checking TikTok profile for unseen videos: {profile_url}")
+        print(f"[*] Scanning cartoon profile for popular videos: {profile_url}")
         try:
             with YoutubeDL(options) as ydl:
                 profile = ydl.extract_info(profile_url, download=False)
 
+            username = profile_url.rstrip("/").split("@")[-1]
             entries = profile.get("entries") or []
             for entry in entries:
                 if not entry:
                     continue
                 video_id = str(entry.get("id") or "").strip()
-                webpage_url = entry.get("webpage_url") or entry.get("url")
-                if not webpage_url and video_id:
-                    username = profile_url.rstrip("/").split("@")[-1]
-                    webpage_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
-                if not webpage_url or webpage_url in seen_sources:
+                video_url = entry.get("webpage_url") or entry.get("url")
+                if not video_url and video_id:
+                    video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+                if not video_url or video_url in seen_sources:
                     continue
 
-                title = str(entry.get("title") or entry.get("description") or "TikTok Cartoon")
-                creator = str(
-                    entry.get("uploader") or entry.get("channel")
-                    or profile_url.rstrip("/").split("@")[-1]
-                )
-                print(f"[+] TikTok video selected from {profile_url}: {title}")
-                print(f"[+] Source: {webpage_url}")
-                return webpage_url, title, webpage_url, creator
+                views = entry.get("view_count")
+                likes = entry.get("like_count")
+                comments = entry.get("comment_count")
 
-            print(f"[*] No unseen videos currently available on {profile_url}")
+                # Flat playlist extraction may omit engagement statistics.
+                # Fetch metadata for that individual candidate (without downloading)
+                # so popularity is based on actual TikTok metrics, not upload date.
+                if views is None:
+                    try:
+                        with YoutubeDL(options) as ydl:
+                            details = ydl.extract_info(video_url, download=False)
+                        views = details.get("view_count", 0)
+                        likes = details.get("like_count", likes)
+                        comments = details.get("comment_count", comments)
+                        entry = {**entry, **details}
+                    except Exception as exc:
+                        print(f"[!] Could not read engagement stats for {video_url}: {exc}")
+                        continue
+
+                views = int(views or 0)
+                likes = int(likes or 0)
+                comments = int(comments or 0)
+                if views <= 0:
+                    print(f"[*] Skipping video without usable view statistics: {video_url}")
+                    continue
+
+                # Views determine popularity; likes/comments break close ties.
+                candidates.append({
+                    "url": video_url,
+                    "title": str(entry.get("title") or entry.get("description") or "TikTok Cartoon"),
+                    "creator": str(entry.get("uploader") or entry.get("channel") or username),
+                    "views": views,
+                    "likes": likes,
+                    "comments": comments,
+                    "score": (views * 1_000_000) + (likes * 100) + comments,
+                })
         except Exception as exc:
             message = f"{profile_url}: {exc}"
             account_errors.append(message)
-            print(f"[!] Could not read this account; checking the next one. {message}")
+            print(f"[!] Could not scan this profile; continuing to the next. {message}")
 
-    details = " | ".join(account_errors)
-    raise RuntimeError(
-        "Configured TikTok accounts mein koi naya unseen video nahi mila. "
-        "Sirf pehle se processed/pending source videos skip hoti hain."
-        + (f" Account errors: {details}" if details else "")
+    if not candidates:
+        details = " | ".join(account_errors)
+        raise RuntimeError(
+            "Teeno TikTok accounts par koi unprocessed video usable view counts ke sath nahi mili."
+            + (f" Account errors: {details}" if details else "")
+        )
+
+    candidates.sort(
+        key=lambda item: (item["views"], item["likes"], item["comments"]),
+        reverse=True,
     )
-
+    chosen = candidates[0]
+    print(
+        f"[TRENDING PICK] {chosen['title']} | "
+        f"Views: {chosen['views']:,} | Likes: {chosen['likes']:,} | "
+        f"Comments: {chosen['comments']:,}"
+    )
+    print(f"[+] Selected from {chosen['creator']}: {chosen['url']}")
+    return chosen["url"], chosen["title"], chosen["url"], chosen["creator"]
 
 def download_video(url, output_path=None):
     """Download the TikTok source in its best available single-file format.
