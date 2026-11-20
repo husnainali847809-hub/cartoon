@@ -1,7 +1,9 @@
 name: Automated Cartoon Shorts Bot
 
 on:
-  # Testing is manual-only. Re-enable schedule after review approval.
+  # Run daily before the first Pakistan-time publishing slot (09:00 PKT).
+  schedule:
+    - cron: "45 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -25,27 +27,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
 
-      - name: Render cartoon parts for manual review
+      - name: Render videos and schedule Buffer posts
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
         run: |
           python -m py_compile main.py
           python main.py
 
-
-      - name: Upload review videos for download
-        uses: actions/upload-artifact@v4
-        with:
-          name: cartoon-review-videos
-          path: review_output/*.mp4
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Save processed cartoon history
+      - name: Save processed cartoon history and remaining queue
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add processed_cartoon_sources.json cartoon_queue.json
           if ! git diff --cached --quiet; then
-            git commit -m "Save processed cartoon history"
+            git commit -m "Save cartoon posting history and queue"
             git pull --rebase origin main
             git push origin main
           fi
