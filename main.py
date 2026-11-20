@@ -17,7 +17,8 @@ ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
 ARCHIVE_METADATA_URL = "https://archive.org/metadata/{}"
 ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
 
-DOWNLOAD_OUTPUT = "downloaded_video.mp4"
+DOWNLOAD_TEMPLATE = "downloaded_video.%(ext)s"
+TIKTOK_PROFILE_URL = "https://www.tiktok.com/@cartoon.tv763"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 STATE_FILE = "processed_cartoon_sources.json"
 MAX_PART_SECONDS = int(os.getenv("MAX_PART_SECONDS", "300"))  # Never make an episode part longer than 5 minutes
@@ -60,152 +61,78 @@ def is_reusable_license(value):
     return bool(str(value or "").strip())
 
 
-def get_wikimedia_cartoon_url():
-    """Find a video on Wikimedia Commons with an explicit reusable license."""
-    print("[*] Trying Wikimedia Commons as an additional cartoon source...")
-    api_url = "https://commons.wikimedia.org/w/api.php"
-    search_terms = ["cartoon animation", "animated film", "2D animation"]
-    headers = {"User-Agent": "CartoonShortsBot/1.0 (automated media search)"}
-
-    for term in search_terms:
-        params = {
-            "action": "query",
-            "format": "json",
-            "generator": "search",
-            "gsrsearch": f"filemime:video/mp4 {term}",
-            "gsrnamespace": 6,
-            "gsrlimit": 30,
-            "prop": "imageinfo",
-            "iiprop": "url|extmetadata",
-        }
-        try:
-            response = requests.get(api_url, params=params, headers=headers, timeout=30)
-            response.raise_for_status()
-            pages = (response.json().get("query") or {}).get("pages") or {}
-            candidates = list(pages.values())
-            random.shuffle(candidates)
-
-            for page in candidates:
-                info_list = page.get("imageinfo") or []
-                if not info_list:
-                    continue
-                info = info_list[0]
-                video_url = info.get("url", "")
-                if not video_url.lower().split("?")[0].endswith(".mp4"):
-                    continue
-
-                metadata = info.get("extmetadata") or {}
-                title = page.get("title", "Wikimedia Commons animation")
-                creator = (metadata.get("Artist") or {}).get("value", "Wikimedia Commons contributor")
-                source_page = "https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_"))
-                print(f"[+] Wikimedia video found: {title}")
-                return video_url, title, source_page, str(creator)
-
-        except (requests.RequestException, ValueError, TypeError) as exc:
-            print(f"[!] Wikimedia Commons search issue for '{term}': {exc}")
-
-    return None
-
-
 def get_viral_cartoon_url(seen_sources=None):
-    """Find a new cartoon video on Internet Archive, avoiding completed sources."""
+    """Select the newest unseen public video from the configured TikTok profile."""
+    from yt_dlp import YoutubeDL
+
     seen_sources = set(seen_sources or [])
-    print("[*] Searching Internet Archive for a NEW cartoon video...")
-    candidates = []
+    print(f"[*] Checking TikTok profile for new cartoon videos: {TIKTOK_PROFILE_URL}")
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "playlistend": 30,
+        "skip_download": True,
+    }
+    with YoutubeDL(options) as ydl:
+        profile = ydl.extract_info(TIKTOK_PROFILE_URL, download=False)
 
-    for search_term in SEARCH_TERMS:
-        params = {
-            "q": search_term,
-            "fl[]": ["identifier", "title"],
-            "rows": 50,
-            "page": 1,
-            "output": "json",
-            "sort[]": "downloads desc",
-        }
-        response = requests.get(ARCHIVE_SEARCH_URL, params=params, timeout=30)
-        response.raise_for_status()
-        docs = response.json().get("response", {}).get("docs", [])
-        candidates.extend(docs)
-
-    # Remove duplicate identifiers and randomize among popular search results.
-    unique = {}
-    for item in candidates:
-        if item.get("identifier"):
-            unique[item["identifier"]] = item
-    candidate_list = list(unique.values())
-    random.shuffle(candidate_list)
-
-    for item in candidate_list:
-        identifier = item["identifier"]
-        if identifier in seen_sources:
+    entries = profile.get("entries") or []
+    for entry in entries:
+        if not entry:
             continue
-        try:
-            response = requests.get(ARCHIVE_METADATA_URL.format(quote(identifier)), timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            metadata = data.get("metadata", {})
-            runtime = parse_runtime(metadata.get("runtime"))
-            # Require a known, positive runtime and respect the overall source safety cap.
-            # The complete source will be split into as many equal parts as needed,
-            # with no individual part exceeding MAX_PART_SECONDS.
-            if runtime is None or runtime <= 0 or runtime > MAX_SOURCE_SECONDS:
-                continue
-
-            files = data.get("files", [])
-            mp4_files = [
-                f for f in files
-                if str(f.get("name", "")).lower().endswith(".mp4")
-                and str(f.get("name", "")).lower() not in ("__ia_thumb.jpg",)
-                and (not f.get("size") or int(f.get("size", 0)) <= 1_000_000_000)
-            ]
-            if not mp4_files:
-                continue
-
-            # Prefer the largest suitable MP4, which is usually the full-quality source.
-            selected_file = max(mp4_files, key=lambda f: int(f.get("size", 0) or 0))
-            filename = selected_file["name"]
-            video_url = ARCHIVE_DOWNLOAD_URL.format(
-                quote(identifier), quote(filename, safe="/")
-            )
-            title = str(metadata.get("title") or item.get("title") or identifier)
-            creator = metadata.get("creator", "Unknown")
-            if isinstance(creator, list):
-                creator = ", ".join(str(x) for x in creator[:2])
-            source_page = f"https://archive.org/details/{quote(identifier)}"
-            # License information is not required for source selection.
-            # Accept the video regardless of whether Archive.org provides license metadata.
-            print(f"[+] Video found: {title}")
-            print(f"[+] Source: {source_page}")
-            return video_url, title, source_page, str(creator)
-
-        except (requests.RequestException, ValueError, TypeError) as exc:
-            print(f"[!] Skipping Archive.org item {identifier}: {exc}")
+        video_id = str(entry.get("id") or "").strip()
+        webpage_url = entry.get("webpage_url") or entry.get("url")
+        if not webpage_url and video_id:
+            webpage_url = f"https://www.tiktok.com/@cartoon.tv763/video/{video_id}"
+        if not webpage_url or webpage_url in seen_sources:
             continue
-
-    commons_result = get_wikimedia_cartoon_url()
-    if commons_result:
-        return commons_result
+        title = str(entry.get("title") or entry.get("description") or "TikTok Cartoon")
+        creator = str(entry.get("uploader") or entry.get("channel") or "@cartoon.tv763")
+        print(f"[+] TikTok video selected: {title}")
+        print(f"[+] Source: {webpage_url}")
+        return webpage_url, title, webpage_url, creator
 
     raise RuntimeError(
-        "Internet Archive aur Wikimedia Commons par is waqt suitable, explicitly licensed MP4 nahi mila. Agli scheduled run par dobara try hoga."
+        "TikTok profile par recent 30 videos mein koi naya video nahi mila, "
+        "ya TikTok ne public profile data access block kar diya."
     )
 
 
-def download_video(url, output_path):
-    print("[*] Downloading video from Internet Archive...")
-    with requests.get(url, stream=True, timeout=(30, 180)) as response:
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "").lower()
-        if "text/html" in content_type:
-            raise RuntimeError("Archive.org ne video ke bajaye HTML page return kiya.")
-        with open(output_path, "wb") as file_handle:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    file_handle.write(chunk)
-    if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
-        raise RuntimeError("Downloaded file empty ya incomplete hai.")
-    print("[+] Download complete!")
+def download_video(url, output_path=None):
+    """Download the TikTok source in its best available single-file format.
 
+    No source-format conversion or remux is requested here. The original
+    downloaded extension is retained; the existing editor creates its usual
+    final MP4 output later in the pipeline.
+    """
+    from yt_dlp import YoutubeDL
+    import glob
+
+    print(f"[*] Downloading original TikTok video format: {url}")
+    for old_file in glob.glob("downloaded_video.*"):
+        try:
+            os.remove(old_file)
+        except OSError:
+            pass
+
+    options = {
+        "format": "best",
+        "outtmpl": DOWNLOAD_TEMPLATE,
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": False,
+        "retries": 3,
+        "fragment_retries": 3,
+    }
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=True)
+        downloaded_path = ydl.prepare_filename(info)
+
+    if not os.path.exists(downloaded_path) or os.path.getsize(downloaded_path) < 100_000:
+        raise RuntimeError("TikTok video download missing, empty, ya incomplete hai.")
+    print(f"[+] Original source downloaded: {downloaded_path}")
+    return downloaded_path
 
 def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60, part_number=1, total_parts=5):
     """Render a full-screen 9:16 cartoon part with a large, sharp foreground video.
@@ -777,9 +704,9 @@ def get_today_publish_slots(now):
 def build_episode_parts(seen_sources, pending_parts):
     """Download a fresh episode and append every complete-episode part to backlog."""
     target_video_url, video_title, source_page, creator = get_viral_cartoon_url(seen_sources)
-    download_video(target_video_url, DOWNLOAD_OUTPUT)
+    source_path = download_video(target_video_url)
 
-    source = VideoFileClip(DOWNLOAD_OUTPUT)
+    source = VideoFileClip(source_path)
     try:
         full_duration = float(source.duration or 0)
     finally:
@@ -857,6 +784,7 @@ if __name__ == "__main__":
 
         queued_today = 0
         cached_source_url = None
+        cached_source_path = None
         last_scheduled_slot = None
         while queued_today < daily_target and pending_parts:
             # Recalculate future slots after each render/upload. Exclude every
@@ -877,15 +805,13 @@ if __name__ == "__main__":
             source_url = task["video_url"]
 
             # Switch source files when the backlog moves to a different episode.
-            if cached_source_url != source_url or not os.path.exists(DOWNLOAD_OUTPUT):
-                if os.path.exists(DOWNLOAD_OUTPUT):
-                    os.remove(DOWNLOAD_OUTPUT)
-                download_video(source_url, DOWNLOAD_OUTPUT)
+            if cached_source_url != source_url or not cached_source_path or not os.path.exists(cached_source_path):
+                cached_source_path = download_video(source_url)
                 cached_source_url = source_url
 
             segment_duration = float(task["end"]) - float(task["start"])
             convert_to_vertical_short(
-                DOWNLOAD_OUTPUT,
+                cached_source_path,
                 output_path,
                 start_time=float(task["start"]),
                 duration=segment_duration,
@@ -937,8 +863,12 @@ if __name__ == "__main__":
                 f"Remaining backlog: {len(pending_parts)} parts."
             )
 
-        if os.path.exists(DOWNLOAD_OUTPUT):
-            os.remove(DOWNLOAD_OUTPUT)
+        import glob
+        for downloaded_file in glob.glob("downloaded_video.*"):
+            try:
+                os.remove(downloaded_file)
+            except OSError:
+                pass
 
         print(
             f"[DAILY RESULT] {queued_today}/{daily_target} videos queued for today's "
