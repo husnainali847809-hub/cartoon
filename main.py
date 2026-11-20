@@ -704,75 +704,51 @@ def build_episode_parts(seen_sources, pending_parts):
 
 if __name__ == "__main__":
     try:
-        if not (os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN):
-            raise RuntimeError(
-                "Missing Buffer API key. Add GitHub Secret BUFFER_API_KEY from Buffer Settings > API."
-            )
-
-        pakistan_tz = ZoneInfo("Asia/Karachi")
-        now_pakistan = datetime.now(pakistan_tz)
-        publish_slots = get_today_publish_slots(now_pakistan)
-        if not publish_slots:
-            raise RuntimeError(
-                "All five daily publishing slots have passed. Pending parts are preserved "
-                "for the next daily run; no expiring temporary links were created."
-            )
-
-        daily_target = min(5, len(publish_slots))
-        print(
-            f"[*] Daily video target: 5. Available future slots today: "
-            f"{len(publish_slots)}. This single run will queue up to {daily_target} videos "
-            "for separate Buffer publishing times."
-        )
+        # TEST MODE: create downloadable review videos only.
+        # This mode intentionally never uploads to beacon.host or contacts Buffer.
+        review_dir = "review_output"
+        os.makedirs(review_dir, exist_ok=True)
+        for old_output in os.listdir(review_dir):
+            old_path = os.path.join(review_dir, old_output)
+            if os.path.isfile(old_path):
+                os.remove(old_path)
 
         seen_sources = load_processed_sources()
         pending_parts = load_pending_parts()
+        daily_target = 5
+        print("[TEST MODE] Buffer posting is DISABLED. Videos will be saved for manual review.")
+        print(f"[*] Existing pending episode parts: {len(pending_parts)}")
+
         reserved_sources = set(seen_sources) | {
             item.get("source_page") for item in pending_parts if item.get("source_page")
         }
-        print(f"[*] Existing pending episode parts: {len(pending_parts)}")
 
-        # If one short episode yields only 2-3 parts, fetch another complete
-        # episode and append its parts until today's five-video target is met.
+        # Fetch complete episodes until at least five reviewable parts are available.
         while len(pending_parts) < daily_target:
             before_count = len(pending_parts)
             source_page = build_episode_parts(reserved_sources, pending_parts)
             if len(pending_parts) <= before_count:
-                raise RuntimeError("A new episode did not add any publishable parts.")
+                raise RuntimeError("A new episode did not add any reviewable parts.")
             reserved_sources.add(source_page)
-            print(
-                f"[+] Added {len(pending_parts) - before_count} parts from another episode. "
-                f"Backlog now contains {len(pending_parts)} parts."
-            )
+            print(f"[+] Added {len(pending_parts) - before_count} parts. Backlog: {len(pending_parts)}")
 
-        queued_today = 0
+        rendered = 0
         cached_source_url = None
         cached_source_path = None
-        last_scheduled_slot = None
-        while queued_today < daily_target and pending_parts:
-            # Recalculate future slots after each render/upload. Exclude every
-            # slot already assigned in this run so posts cannot share a time.
-            current_time = datetime.now(pakistan_tz)
-            remaining_slots = [
-                candidate
-                for candidate in get_today_publish_slots(current_time)
-                if last_scheduled_slot is None or candidate > last_scheduled_slot
-            ]
-            if not remaining_slots:
-                print("[!] No more unassigned same-day slots remain; keeping remaining parts for tomorrow.")
-                break
-            slot = remaining_slots[0]
 
-            task = pending_parts[0]
-            output_path = f"cartoon_part_{task['part_number']}.mp4"
+        for task in pending_parts[:daily_target]:
             source_url = task["video_url"]
-
-            # Switch source files when the backlog moves to a different episode.
             if cached_source_url != source_url or not cached_source_path or not os.path.exists(cached_source_path):
                 cached_source_path = download_video(source_url)
                 cached_source_url = source_url
 
+            output_name = (
+                f"cartoon_part_{int(task['part_number']):02d}_of_"
+                f"{int(task['total_parts']):02d}.mp4"
+            )
+            output_path = os.path.join(review_dir, output_name)
             segment_duration = float(task["end"]) - float(task["start"])
+
             convert_to_vertical_short(
                 cached_source_path,
                 output_path,
@@ -781,50 +757,8 @@ if __name__ == "__main__":
                 part_number=int(task["part_number"]),
                 total_parts=int(task["total_parts"]),
             )
-            public_url = upload_to_temp_host(output_path)
-
-            caption = (
-                f"🎬 {task['title']}\n"
-                f"📌 PART {task['part_number']}/{task['total_parts']}\n"
-                "Watch the complete cartoon story in all parts.\n"
-                "#Cartoons #Animation #CartoonShorts #FunnyCartoons"
-            )
-            due_at_utc = (
-                slot.astimezone(timezone.utc)
-                .isoformat(timespec="seconds")
-                .replace("+00:00", "Z")
-            )
-            send_to_buffer(
-                public_url,
-                caption,
-                f"{task['title']} - Part {task['part_number']}",
-                "post",
-                due_at=due_at_utc,
-            )
-
-            # Mark this slot as used only after Buffer confirms acceptance.
-            last_scheduled_slot = slot
-
-            # Only remove a part after Buffer confirms that it accepted it.
-            pending_parts.pop(0)
-            save_pending_parts(pending_parts)
-            queued_today += 1
-
-            if not any(
-                item.get("source_page") == task["source_page"]
-                for item in pending_parts
-            ):
-                save_processed_source(task["source_page"])
-                seen_sources.add(task["source_page"])
-
-            if os.path.exists(output_path):
-                os.remove(output_path)
-
-            print(
-                f"[SUCCESS] Video {queued_today}/{daily_target} queued for "
-                f"{slot.strftime('%Y-%m-%d %H:%M')} Pakistan time. "
-                f"Remaining backlog: {len(pending_parts)} parts."
-            )
+            rendered += 1
+            print(f"[REVIEW READY] {output_path}")
 
         import glob
         for downloaded_file in glob.glob("downloaded_video.*"):
@@ -834,14 +768,9 @@ if __name__ == "__main__":
                 pass
 
         print(
-            f"[DAILY RESULT] {queued_today}/{daily_target} videos queued for today's "
-            f"available slots. {len(pending_parts)} extra parts remain saved for the next day."
+            f"[TEST RESULT] {rendered} video(s) rendered into {review_dir}/. "
+            "Pending parts were NOT removed and Buffer was NOT contacted."
         )
-        if queued_today < 5:
-            print(
-                "[!] Five posts could not be scheduled today because fewer than five "
-                "future daily slots remained. Unpublished parts have been retained."
-            )
     except Exception as exc:
-        print(f"[-] Automation failed: {exc}")
+        print(f"[-] Test automation failed: {exc}")
         raise
