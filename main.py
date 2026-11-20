@@ -731,37 +731,42 @@ def build_episode_parts(seen_sources, pending_parts):
 
 if __name__ == "__main__":
     try:
-        # TEST MODE: create downloadable review videos only.
-        # This mode intentionally never uploads to beacon.host or contacts Buffer.
-        review_dir = "review_output"
-        os.makedirs(review_dir, exist_ok=True)
-        for old_output in os.listdir(review_dir):
-            old_path = os.path.join(review_dir, old_output)
-            if os.path.isfile(old_path):
-                os.remove(old_path)
+        # Production mode: render and schedule up to five videos in Buffer daily.
+        pakistan_tz = ZoneInfo("Asia/Karachi")
+        now = datetime.now(pakistan_tz)
+        publish_slots = get_today_publish_slots(now)
+        daily_target = min(5, len(publish_slots))
+
+        if daily_target == 0:
+            print("[INFO] Aaj ke tamam publishing slots guzar chuke hain. Pending videos kal schedule hongi.")
+            raise SystemExit(0)
 
         seen_sources = load_processed_sources()
         pending_parts = load_pending_parts()
-        daily_target = 5
-        print("[TEST MODE] Buffer posting is DISABLED. Videos will be saved for manual review.")
+        print("[LIVE MODE] Buffer posting ENABLED.")
+        print(f"[*] Pakistan time: {now.isoformat()}")
+        print(f"[*] Future publishing slots available today: {len(publish_slots)}")
         print(f"[*] Existing pending episode parts: {len(pending_parts)}")
 
+        # Pending parts are not marked as processed. They remain eligible until
+        # every part has been successfully queued; this set only prevents adding
+        # the same source episode to the backlog twice at the same time.
         reserved_sources = set(seen_sources) | {
             item.get("source_page") for item in pending_parts if item.get("source_page")
         }
 
-        # Fetch complete episodes until at least five reviewable parts are available.
         while len(pending_parts) < daily_target:
             before_count = len(pending_parts)
             source_page = build_episode_parts(reserved_sources, pending_parts)
             if len(pending_parts) <= before_count:
-                raise RuntimeError("A new episode did not add any reviewable parts.")
+                raise RuntimeError("A new episode did not add any publishable parts.")
             reserved_sources.add(source_page)
             print(f"[+] Added {len(pending_parts) - before_count} parts. Backlog: {len(pending_parts)}")
 
-        rendered = 0
+        import glob
         cached_source_url = None
         cached_source_path = None
+        scheduled_count = 0
 
         for task in pending_parts[:daily_target]:
             source_url = task["video_url"]
@@ -773,31 +778,62 @@ if __name__ == "__main__":
                 f"cartoon_part_{int(task['part_number']):02d}_of_"
                 f"{int(task['total_parts']):02d}.mp4"
             )
-            output_path = os.path.join(review_dir, output_name)
             segment_duration = float(task["end"]) - float(task["start"])
-
             convert_to_vertical_short(
                 cached_source_path,
-                output_path,
+                output_name,
                 start_time=float(task["start"]),
                 duration=segment_duration,
                 part_number=int(task["part_number"]),
                 total_parts=int(task["total_parts"]),
             )
-            rendered += 1
-            print(f"[REVIEW READY] {output_path}")
 
-        import glob
+            # Upload and verify the media URL before creating the Buffer post.
+            media_url = upload_to_temp_host(output_name)
+            part_label = f"Part {task['part_number']}/{task['total_parts']}"
+            caption = f"{task['title']} — {part_label}\nSource: {task['creator']}"
+            slot = publish_slots[scheduled_count]
+            due_at = slot.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+            post_id = send_to_buffer(
+                media_url=media_url,
+                caption=caption,
+                video_title=f"{task['title']} - {part_label}",
+                post_type="reel",
+                due_at=due_at,
+                media_type="video",
+            )
+            print(f"[BUFFER CONFIRMED] {post_id} scheduled for {slot.isoformat()}")
+
+            # Remove a part only after Buffer confirms that it was queued.
+            pending_parts.pop(0)
+            save_pending_parts(pending_parts)
+            scheduled_count += 1
+
+            source_page = task.get("source_page")
+            if source_page and not any(
+                item.get("source_page") == source_page for item in pending_parts
+            ):
+                save_processed_source(source_page)
+                print(f"[+] All parts of source episode marked processed: {source_page}")
+
         for downloaded_file in glob.glob("downloaded_video.*"):
             try:
                 os.remove(downloaded_file)
             except OSError:
                 pass
+        for output_file in glob.glob("cartoon_part_*_of_*.mp4"):
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
 
         print(
-            f"[TEST RESULT] {rendered} video(s) rendered into {review_dir}/. "
-            "Pending parts were NOT removed and Buffer was NOT contacted."
+            f"[SUCCESS] {scheduled_count} video(s) successfully added to Buffer "
+            "at the selected Pakistan-time slots. Remaining parts stay queued for the next run."
         )
+    except SystemExit:
+        raise
     except Exception as exc:
-        print(f"[-] Test automation failed: {exc}")
+        print(f"[-] Cartoon automation failed: {exc}")
         raise
