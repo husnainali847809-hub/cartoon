@@ -830,7 +830,10 @@ if __name__ == "__main__":
             # Upload and verify the media URL before creating the Buffer post.
             media_url = upload_to_temp_host(output_name)
             part_label = f"Part {task['part_number']}/{task['total_parts']}"
-            caption = f"{task['title']} — {part_label}\nSource: {task['creator']}"
+            caption = (
+                f"{task['title']} — {part_label}\n"
+                "#Cartoon #CartoonShorts #CartoonClips #Animation #FunnyCartoon #Shorts"
+            )
             slot = publish_slots[scheduled_count]
             due_at = slot.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
