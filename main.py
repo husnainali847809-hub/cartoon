@@ -13,10 +13,6 @@ from moviepy import VideoFileClip, ColorClip, CompositeVideoClip, ImageClip
 BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")  # legacy fallback only
 BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID")
 
-ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
-ARCHIVE_METADATA_URL = "https://archive.org/metadata/{}"
-ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
-
 DOWNLOAD_TEMPLATE = "downloaded_video.%(ext)s"
 TIKTOK_PROFILE_URL = "https://www.tiktok.com/@cartoon.tv763"
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
@@ -25,40 +21,7 @@ MAX_PART_SECONDS = int(os.getenv("MAX_PART_SECONDS", "300"))  # Never make an ep
 SHORT_SECONDS = int(os.getenv("SHORT_SECONDS", "60"))
 MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
-SEARCH_TERMS = [
-    'mediatype:movies AND (subject:"cartoons" OR subject:"animation" OR title:cartoon)',
-    'mediatype:movies AND (subject:"animated films" OR title:"animated")',
-]
 # =======================================================
-
-
-def parse_runtime(value):
-    """Convert Archive.org runtime values (HH:MM:SS, MM:SS or seconds) to seconds."""
-    if value is None:
-        return None
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        pass
-
-    parts = str(value).strip().split(":")
-    try:
-        nums = [int(part) for part in parts]
-    except ValueError:
-        return None
-
-    if len(nums) == 3:
-        return nums[0] * 3600 + nums[1] * 60 + nums[2]
-    if len(nums) == 2:
-        return nums[0] * 60 + nums[1]
-    return None
-
-
-def is_reusable_license(value):
-    """Accept any item that has explicit license/rights metadata; reject missing metadata."""
-    if isinstance(value, (list, tuple)):
-        return any(str(item).strip() for item in value if item is not None)
-    return bool(str(value or "").strip())
 
 
 def get_viral_cartoon_url(seen_sources=None):
