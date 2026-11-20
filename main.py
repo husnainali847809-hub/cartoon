@@ -14,7 +14,12 @@ BUFFER_ACCESS_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")  # legacy fallback only
 BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID")
 
 DOWNLOAD_TEMPLATE = "downloaded_video.%(ext)s"
-TIKTOK_PROFILE_URL = "https://www.tiktok.com/@cartoon.tv763"
+# Source accounts: the original account plus the two newly requested accounts.
+TIKTOK_PROFILE_URLS = [
+    "https://www.tiktok.com/@cartoon.tv763",
+    "https://www.tiktok.com/@cartoonenemation",
+    "https://www.tiktok.com/@oggyandthecockroaches",
+]
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 STATE_FILE = "processed_cartoon_sources.json"
 MAX_PART_SECONDS = int(os.getenv("MAX_PART_SECONDS", "300"))  # Never make an episode part longer than 5 minutes
@@ -25,40 +30,62 @@ MAX_SOURCE_SECONDS = int(os.getenv("MAX_SOURCE_SECONDS", "14400"))
 
 
 def get_viral_cartoon_url(seen_sources=None):
-    """Select the newest unseen public video from the configured TikTok profile."""
+    """Select an unseen public video from any configured TikTok source account.
+
+    Each account is checked in order. An account with no unseen public videos
+    or a temporary extraction error does not prevent checking the others.
+    Only source URLs already recorded as processed/pending are skipped.
+    """
     from yt_dlp import YoutubeDL
 
     seen_sources = set(seen_sources or [])
-    print(f"[*] Checking TikTok profile for new cartoon videos: {TIKTOK_PROFILE_URL}")
     options = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
-        "playlistend": 30,
+        "playlistend": 100,
         "skip_download": True,
     }
-    with YoutubeDL(options) as ydl:
-        profile = ydl.extract_info(TIKTOK_PROFILE_URL, download=False)
+    account_errors = []
 
-    entries = profile.get("entries") or []
-    for entry in entries:
-        if not entry:
-            continue
-        video_id = str(entry.get("id") or "").strip()
-        webpage_url = entry.get("webpage_url") or entry.get("url")
-        if not webpage_url and video_id:
-            webpage_url = f"https://www.tiktok.com/@cartoon.tv763/video/{video_id}"
-        if not webpage_url or webpage_url in seen_sources:
-            continue
-        title = str(entry.get("title") or entry.get("description") or "TikTok Cartoon")
-        creator = str(entry.get("uploader") or entry.get("channel") or "@cartoon.tv763")
-        print(f"[+] TikTok video selected: {title}")
-        print(f"[+] Source: {webpage_url}")
-        return webpage_url, title, webpage_url, creator
+    for profile_url in TIKTOK_PROFILE_URLS:
+        print(f"[*] Checking TikTok profile for unseen videos: {profile_url}")
+        try:
+            with YoutubeDL(options) as ydl:
+                profile = ydl.extract_info(profile_url, download=False)
 
+            entries = profile.get("entries") or []
+            for entry in entries:
+                if not entry:
+                    continue
+                video_id = str(entry.get("id") or "").strip()
+                webpage_url = entry.get("webpage_url") or entry.get("url")
+                if not webpage_url and video_id:
+                    username = profile_url.rstrip("/").split("@")[-1]
+                    webpage_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+                if not webpage_url or webpage_url in seen_sources:
+                    continue
+
+                title = str(entry.get("title") or entry.get("description") or "TikTok Cartoon")
+                creator = str(
+                    entry.get("uploader") or entry.get("channel")
+                    or profile_url.rstrip("/").split("@")[-1]
+                )
+                print(f"[+] TikTok video selected from {profile_url}: {title}")
+                print(f"[+] Source: {webpage_url}")
+                return webpage_url, title, webpage_url, creator
+
+            print(f"[*] No unseen videos currently available on {profile_url}")
+        except Exception as exc:
+            message = f"{profile_url}: {exc}"
+            account_errors.append(message)
+            print(f"[!] Could not read this account; checking the next one. {message}")
+
+    details = " | ".join(account_errors)
     raise RuntimeError(
-        "TikTok profile par recent 30 videos mein koi naya video nahi mila, "
-        "ya TikTok ne public profile data access block kar diya."
+        "Configured TikTok accounts mein koi naya unseen video nahi mila. "
+        "Sirf pehle se processed/pending source videos skip hoti hain."
+        + (f" Account errors: {details}" if details else "")
     )
 
 
