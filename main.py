@@ -43,7 +43,6 @@ def get_viral_cartoon_url(seen_sources=None):
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
-        "playlistend": 100,
         "skip_download": True,
     }
     account_errors = []
@@ -382,7 +381,7 @@ def save_processed_source(source_page):
     sources = load_processed_sources()
     sources.add(source_page)
     with open(STATE_FILE, "w", encoding="utf-8") as handle:
-        json.dump({"sources": sorted(sources)[-500:]}, handle, indent=2)
+        json.dump({"sources": sorted(sources)}, handle, indent=2)
 
 
 def upload_to_temp_host(file_path):
