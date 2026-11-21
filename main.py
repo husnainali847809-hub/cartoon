@@ -189,16 +189,6 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         video_kbps = max(400, min(2800, safe_total_kbps - audio_kbps))
 
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        label = f"PART {part_number} / {total_parts}"
-        # Place the part number in the blurred BACKGROUND immediately above
-        # the sharp cartoon frame, centered and never covering the cartoon.
-        source_w, source_h = source.size
-        source_ratio = float(source_w) / max(1, float(source_h))
-        foreground_w = min(output_w, int(output_h * source_ratio))
-        foreground_h = min(output_h, int(output_w / source_ratio))
-        part_label_y = max(90, int((output_h - foreground_h) / 2) - 105)
-
         # Background fills the complete portrait canvas; foreground stays
         # uncropped and is enlarged to the full 1080px width.
         filter_graph = (
@@ -206,10 +196,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=28:12,eq=brightness=-0.22:saturation=0.75[bg];"
             "[fgsrc]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-            f"drawtext=fontfile={font_path}:text='{label}':"
-            "fontsize=64:fontcolor=white:borderw=3:bordercolor=black:"
-            "x=(w-text_w)/2:y=" + str(part_label_y) + "[vout]"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[vout]"
         )
         command = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "warning", "-stats",
@@ -225,7 +212,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
             "-c:a", "aac", "-b:a", f"{audio_kbps}k",
             "-movflags", "+faststart", output_path,
         ]
-        print(f"[*] Fast FFmpeg render: part {part_number}/{total_parts}, "
+        print("[*] Fast FFmpeg render without part-number overlay: "
               f"{actual_duration:.1f}s at 1080x1920 (full-screen portrait; enlarged cartoon)...")
         subprocess.run(command, check=True)
 
@@ -255,7 +242,7 @@ def convert_to_vertical_short(input_path, output_path, start_time=0, duration=60
         finally:
             check.close()
 
-        print(f"[+] Part {part_number}/{total_parts} verified: "
+        print("[+] Clean clip verified: "
               f"{actual_duration:.1f}s, 1080x1920, {output_size / (1024 * 1024):.1f} MiB")
         return actual_duration
     finally:
