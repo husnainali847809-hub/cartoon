@@ -829,9 +829,17 @@ if __name__ == "__main__":
 
             # Upload and verify the media URL before creating the Buffer post.
             media_url = upload_to_temp_host(output_name)
-            part_label = f"Part {task['part_number']}/{task['total_parts']}"
+            cartoon_name = task.get("title") or "Cartoon"
+            import re
+            cartoon_name = re.sub(r"(?i)\bpart\s*[-:#]?\s*\d+(?:\s*(?:/|of)\s*\d+)?\b", "", cartoon_name)
+            cartoon_name = re.sub(r"(?i)\b(ep|episode)\s*[-:#]?\s*\d+\b", "", cartoon_name)
+            cartoon_name = re.sub(r"(?i)\b(source|credit)\s*[:：].*$", "", cartoon_name)
+            cartoon_name = re.sub(r"#\w+", "", cartoon_name)
+            cartoon_name = re.sub(r"\s+", " ", cartoon_name).strip(" -–—|:·") or "Cartoon"
+            if "oggyandthecockroaches" in str(task.get("creator", "")).lower():
+                cartoon_name = "Oggy and the Cockroaches"
             caption = (
-                f"{task['title']} — {part_label}\n"
+                f"{cartoon_name}\n"
                 "#Cartoon #CartoonShorts #CartoonClips #Animation #FunnyCartoon #Shorts"
             )
             slot = publish_slots[scheduled_count]
@@ -840,7 +848,7 @@ if __name__ == "__main__":
             post_id = send_to_buffer(
                 media_url=media_url,
                 caption=caption,
-                video_title=f"{task['title']} - {part_label}",
+                video_title=cartoon_name,
                 post_type="reel",
                 due_at=due_at,
                 media_type="video",
