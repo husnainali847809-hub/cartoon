@@ -1,9 +1,9 @@
 name: Automated Cartoon Shorts Bot
 
 on:
-  # Run daily before the first Pakistan-time publishing slot (09:00 PKT).
+  # Start early to allow rendering and Buffer queueing before the 09:00 PKT slot.
   schedule:
-    - cron: "45 3 * * *"
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 permissions:
