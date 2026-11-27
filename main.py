@@ -16,9 +16,7 @@ BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID")
 DOWNLOAD_TEMPLATE = "downloaded_video.%(ext)s"
 # Source accounts: the original account plus the two newly requested accounts.
 TIKTOK_PROFILE_URLS = [
-    "https://www.tiktok.com/@cartoon.tv763",
-    "https://www.tiktok.com/@cartoonenemation",
-    "https://www.tiktok.com/@oggyandthecockroaches",
+    "https://www.tiktok.com/@viral_ai_toon",
 ]
 SHORTS_OUTPUT = "final_cartoon_video.mp4"
 STATE_FILE = "processed_cartoon_sources.json"
@@ -755,122 +753,208 @@ def build_episode_parts(seen_sources, pending_parts):
     return source_page
 
 
-if __name__ == "__main__":
-    try:
-        # Production mode: render and schedule up to five videos in Buffer daily.
-        pakistan_tz = ZoneInfo("Asia/Karachi")
-        now = datetime.now(pakistan_tz)
-        publish_slots = get_today_publish_slots(now)
-        daily_target = min(5, len(publish_slots))
 
-        if daily_target == 0:
-            print("[INFO] Aaj ke tamam publishing slots guzar chuke hain. Pending videos kal schedule hongi.")
-            raise SystemExit(0)
+def get_daily_cartoon_candidates(seen_sources, limit=80):
+    """Collect unprocessed videos from the one configured creator and rank by popularity."""
+    from yt_dlp import YoutubeDL
 
-        seen_sources = load_processed_sources()
-        pending_parts = load_pending_parts()
-        print("[LIVE MODE] Buffer posting ENABLED.")
-        print(f"[*] Pakistan time: {now.isoformat()}")
-        print(f"[*] Future publishing slots available today: {len(publish_slots)}")
-        print(f"[*] Existing pending episode parts: {len(pending_parts)}")
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "playlistend": limit,
+        "socket_timeout": 30,
+    }
+    candidates = []
+    for profile_url in TIKTOK_PROFILE_URLS:
+        username = profile_url.rstrip("/").split("@")[-1]
+        print(f"[*] Scanning the only configured cartoon source: {profile_url}")
+        with YoutubeDL(options) as ydl:
+            profile = ydl.extract_info(profile_url, download=False)
+        for entry in profile.get("entries") or []:
+            if not entry:
+                continue
+            video_id = str(entry.get("id") or "").strip()
+            video_url = entry.get("webpage_url") or entry.get("url")
+            if not video_url and video_id:
+                video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+            if not video_url or video_url in seen_sources:
+                continue
+            views = entry.get("view_count")
+            likes = entry.get("like_count")
+            comments = entry.get("comment_count")
+            if views is None:
+                try:
+                    with YoutubeDL(options) as ydl:
+                        details = ydl.extract_info(video_url, download=False)
+                    entry = {**entry, **details}
+                    views = details.get("view_count", 0)
+                    likes = details.get("like_count", likes)
+                    comments = details.get("comment_count", comments)
+                except Exception as exc:
+                    print(f"[!] Could not read video metrics; keeping candidate for fallback: {exc}")
+                    views, likes, comments = 0, 0, 0
+            title = str(entry.get("title") or entry.get("description") or "AI Animal Cartoon")
+            candidates.append({
+                "url": video_url,
+                "title": title,
+                "views": int(views or 0),
+                "likes": int(likes or 0),
+                "comments": int(comments or 0),
+                "creator": username,
+            })
+    candidates.sort(
+        key=lambda item: (item["views"], item["likes"], item["comments"]),
+        reverse=True,
+    )
+    print(f"[+] Found {len(candidates)} eligible, not-yet-used source videos.")
+    return candidates
 
-        # Pending parts are not marked as processed. They remain eligible until
-        # every part has been successfully queued; this set only prevents adding
-        # the same source episode to the backlog twice at the same time.
-        reserved_sources = set(seen_sources) | {
-            item.get("source_page") for item in pending_parts if item.get("source_page")
-        }
 
-        while len(pending_parts) < daily_target:
-            before_count = len(pending_parts)
-            source_page = build_episode_parts(reserved_sources, pending_parts)
-            if len(pending_parts) <= before_count:
-                raise RuntimeError("A new episode did not add any publishable parts.")
-            reserved_sources.add(source_page)
-            print(f"[+] Added {len(pending_parts) - before_count} parts. Backlog: {len(pending_parts)}")
+def download_original_cartoon(url, video_number):
+    """Download the best single-file source without trimming, conversion, or re-encoding."""
+    from yt_dlp import YoutubeDL
+    import glob
 
-        import glob
-        cached_source_url = None
-        cached_source_path = None
-        scheduled_count = 0
+    for old_file in glob.glob(f"cartoon_source_{video_number:02d}.*"):
+        try:
+            os.remove(old_file)
+        except OSError:
+            pass
+    template = f"cartoon_source_{video_number:02d}.%(ext)s"
+    options = {
+        "format": "best",
+        "outtmpl": template,
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": False,
+        "retries": 3,
+        "fragment_retries": 3,
+        "max_filesize": 250_000_000,
+        "socket_timeout": 60,
+    }
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=True)
+        path = ydl.prepare_filename(info)
+    if not os.path.isfile(path) or os.path.getsize(path) < 100_000:
+        raise RuntimeError("Downloaded original video is missing, empty, or incomplete.")
+    if os.path.getsize(path) > 250_000_000:
+        raise RuntimeError("Original video exceeds the temporary-host 250 MB limit.")
+    print(f"[+] Original file preserved: {path} ({os.path.getsize(path)} bytes)")
+    return path
 
-        for task in pending_parts[:daily_target]:
-            source_url = task["video_url"]
-            if cached_source_url != source_url or not cached_source_path or not os.path.exists(cached_source_path):
-                cached_source_path = download_video(source_url)
-                cached_source_url = source_url
 
-            output_name = (
-                f"cartoon_part_{int(task['part_number']):02d}_of_"
-                f"{int(task['total_parts']):02d}.mp4"
+def make_cartoon_caption(title):
+    """Keep the existing cartoon-name plus hashtag caption style; never add source attribution."""
+    import re
+    name = str(title or "AI Animal Cartoon").splitlines()[0]
+    name = re.sub(r"@[A-Za-z0-9._]+", "", name)
+    name = re.sub(r"#\w+", "", name)
+    name = re.sub(r"(?i)\b(part|episode|ep)\s*[-:#]?\s*\d+(?:\s*(?:/|of)\s*\d+)?\b", "", name)
+    name = re.sub(r"\s+", " ", name).strip(" -–—|:·")
+    if not name:
+        name = "AI Animal Cartoon"
+    return (
+        f"{name}\n"
+        "#Cartoon #CartoonShorts #AIAnimation #AnimalStories #FunnyCartoon #Reels"
+    )
+
+
+def get_four_publish_slots(now):
+    """Get four daily Pakistan-time slots, moving to the next day if a slot has passed."""
+    slots = []
+    for day_offset in range(8):
+        day = (now + timedelta(days=day_offset)).date()
+        for hour in (9, 12, 15, 18):
+            slot = now.replace(
+                year=day.year, month=day.month, day=day.day,
+                hour=hour, minute=0, second=0, microsecond=0,
             )
-            segment_duration = float(task["end"]) - float(task["start"])
-            convert_to_vertical_short(
-                cached_source_path,
-                output_name,
-                start_time=float(task["start"]),
-                duration=segment_duration,
-                part_number=int(task["part_number"]),
-                total_parts=int(task["total_parts"]),
-            )
+            if slot > now + timedelta(minutes=5):
+                slots.append(slot)
+            if len(slots) == 4:
+                return slots
+    return slots
 
-            # Upload and verify the media URL before creating the Buffer post.
-            media_url = upload_to_temp_host(output_name)
-            cartoon_name = task.get("title") or "Cartoon"
-            import re
-            cartoon_name = re.sub(r"(?i)\bpart\s*[-:#]?\s*\d+(?:\s*(?:/|of)\s*\d+)?\b", "", cartoon_name)
-            cartoon_name = re.sub(r"(?i)\b(ep|episode)\s*[-:#]?\s*\d+\b", "", cartoon_name)
-            cartoon_name = re.sub(r"(?i)\b(source|credit)\s*[:：].*$", "", cartoon_name)
-            cartoon_name = re.sub(r"#\w+", "", cartoon_name)
-            cartoon_name = re.sub(r"\s+", " ", cartoon_name).strip(" -–—|:·") or "Cartoon"
-            if "oggyandthecockroaches" in str(task.get("creator", "")).lower():
-                cartoon_name = "Oggy and the Cockroaches"
-            caption = (
-                f"{cartoon_name}\n"
-                "#Cartoon #CartoonShorts #CartoonClips #Animation #FunnyCartoon #Shorts"
-            )
-            slot = publish_slots[scheduled_count]
-            due_at = slot.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
+def run_single_creator_daily_batch():
+    """Schedule four unposted original-format videos from @viral_ai_toon."""
+    import glob
+
+    api_key = os.getenv("BUFFER_API_KEY") or BUFFER_ACCESS_TOKEN
+    if not api_key:
+        raise RuntimeError("Missing Buffer API key. Configure BUFFER_API_KEY in GitHub Actions secrets.")
+
+    now = datetime.now(ZoneInfo("Asia/Karachi"))
+    slots = get_four_publish_slots(now)
+    if len(slots) != 4:
+        raise RuntimeError("Could not allocate four future Pakistan-time publishing slots.")
+
+    seen_sources = load_processed_sources()
+    candidates = get_daily_cartoon_candidates(seen_sources)
+    if len(candidates) < 4:
+        raise RuntimeError(
+            f"Only {len(candidates)} unused videos were found from @viral_ai_toon; "
+            "the daily target is four. No other source account will be used."
+        )
+
+    scheduled = 0
+    attempted = set()
+    for candidate in candidates:
+        if scheduled >= 4:
+            break
+        url = candidate["url"]
+        if url in attempted:
+            continue
+        attempted.add(url)
+        media_path = None
+        try:
+            media_path = download_original_cartoon(url, scheduled + 1)
+            media_url = upload_to_temp_host(media_path)
+            caption = make_cartoon_caption(candidate["title"])
+            due_at = slots[scheduled].astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
             post_id = send_to_buffer(
                 media_url=media_url,
                 caption=caption,
-                video_title=cartoon_name,
+                video_title=caption.splitlines()[0],
                 post_type="reel",
                 due_at=due_at,
                 media_type="video",
             )
-            print(f"[BUFFER CONFIRMED] {post_id} scheduled for {slot.isoformat()}")
+            save_processed_source(url)
+            scheduled += 1
+            print(
+                f"[BUFFER CONFIRMED] {post_id} | {candidate['title']} | "
+                f"{slots[scheduled - 1].isoformat()}"
+            )
+        except Exception as exc:
+            print(f"[!] Candidate failed; trying another unused video from the same account: {url} | {exc}")
+        finally:
+            if media_path and os.path.exists(media_path):
+                try:
+                    os.remove(media_path)
+                except OSError:
+                    pass
 
-            # Remove a part only after Buffer confirms that it was queued.
-            pending_parts.pop(0)
-            save_pending_parts(pending_parts)
-            scheduled_count += 1
+    for old_file in glob.glob("cartoon_source_*.*"):
+        try:
+            os.remove(old_file)
+        except OSError:
+            pass
 
-            source_page = task.get("source_page")
-            if source_page and not any(
-                item.get("source_page") == source_page for item in pending_parts
-            ):
-                save_processed_source(source_page)
-                print(f"[+] All parts of source episode marked processed: {source_page}")
-
-        for downloaded_file in glob.glob("downloaded_video.*"):
-            try:
-                os.remove(downloaded_file)
-            except OSError:
-                pass
-        for output_file in glob.glob("cartoon_part_*_of_*.mp4"):
-            try:
-                os.remove(output_file)
-            except OSError:
-                pass
-
-        print(
-            f"[SUCCESS] {scheduled_count} video(s) successfully added to Buffer "
-            "at the selected Pakistan-time slots. Remaining parts stay queued for the next run."
+    print(f"[DAILY RESULT] {scheduled}/4 videos confirmed in Buffer from @viral_ai_toon.")
+    if scheduled != 4:
+        raise RuntimeError(
+            f"Daily target not met: only {scheduled}/4 videos were confirmed. "
+            "Check source availability, file compatibility/size, and Buffer errors."
         )
-    except SystemExit:
-        raise
+
+
+if __name__ == "__main__":
+    try:
+        print("[LIVE MODE] Single TikTok source enabled: @viral_ai_toon")
+        run_single_creator_daily_batch()
     except Exception as exc:
         print(f"[-] Cartoon automation failed: {exc}")
         raise
