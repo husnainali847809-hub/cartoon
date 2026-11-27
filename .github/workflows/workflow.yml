@@ -1,7 +1,7 @@
 name: Automated Cartoon Shorts Bot
 
 on:
-  # Start early to allow rendering and Buffer queueing before the 09:00 PKT slot.
+  # One daily source scan and Buffer batch run; the script schedules four daily posts.
   schedule:
     - cron: "0 1 * * *"
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
 
-      - name: Render videos and schedule Buffer posts
+      - name: Download original creator videos and schedule four Buffer posts
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
