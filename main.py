@@ -824,7 +824,10 @@ def download_original_cartoon(url, video_number):
             pass
     template = f"cartoon_source_{video_number:02d}.%(ext)s"
     options = {
-        "format": "best",
+        # Never let yt-dlp choose an audio-only "best" format (TikTok can expose
+        # an MP3 rendition as best). Prefer a single-file MP4 video, then any
+        # video-bearing format, and only then a merged video+audio fallback.
+        "format": "best[ext=mp4][vcodec!=none]/best[vcodec!=none]/bestvideo+bestaudio/best[ext=mp4]/best",
         "outtmpl": template,
         "noplaylist": True,
         "quiet": False,
@@ -833,15 +836,38 @@ def download_original_cartoon(url, video_number):
         "fragment_retries": 3,
         "max_filesize": 250_000_000,
         "socket_timeout": 60,
+        "merge_output_format": "mp4",
     }
     with YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
+        # When yt-dlp merges separate streams, its final filename may use the
+        # requested merge extension rather than prepare_filename's source ext.
+        if not os.path.isfile(path):
+            merged_path = os.path.splitext(path)[0] + ".mp4"
+            if os.path.isfile(merged_path):
+                path = merged_path
     if not os.path.isfile(path) or os.path.getsize(path) < 100_000:
         raise RuntimeError("Downloaded original video is missing, empty, or incomplete.")
     if os.path.getsize(path) > 250_000_000:
         raise RuntimeError("Original video exceeds the temporary-host 250 MB limit.")
-    print(f"[+] Original file preserved: {path} ({os.path.getsize(path)} bytes)")
+    # Validate that the downloaded file really contains a readable video stream
+    # before uploading it to Buffer as a Reel. This catches audio-only MP3 files.
+    clip = None
+    try:
+        clip = VideoFileClip(path)
+        if not clip.duration or clip.duration <= 0 or not clip.size:
+            raise RuntimeError("Downloaded file has no usable video stream.")
+    except Exception as exc:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise RuntimeError(f"Downloaded TikTok file is not a valid video (audio-only/corrupt): {exc}") from exc
+    finally:
+        if clip is not None:
+            clip.close()
+    print(f"[+] Original file preserved and video-verified: {path} ({os.path.getsize(path)} bytes)")
     return path
 
 
